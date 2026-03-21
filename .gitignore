@@ -1,5 +1,105 @@
+# Environment & Configuration
 .env
-*.db
+.env.local
+.env.*.local
+
+# Build Artifacts & Binaries
 tinymuscle
 tenderwatchafrica
-agent/agent.
+*.exe
+*.dll
+*.dylib
+*.so
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+tinymuscle.db
+
+# Go
+/bin/
+/dist/
+*.out
+*.test
+*.prof
+*.pprof
+go.sum.backup
+
+# Node.js & Frontend
+tenderwatch-frontend/node_modules/
+tenderwatch-frontend/dist/
+tenderwatch-frontend/build/
+tenderwatch-frontend/.next/
+tenderwatch-frontend/out/
+tenderwatch-frontend/coverage/
+npm-debug.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+.npm/
+.yarn/cache/
+.yarn/install-state.gz
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+.npmrc
+
+# IDE & Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+.vim/
+.netrwhist
+*~
+.vimrc
+.editorconfig.local
+
+# OS-specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.AppleDouble
+.LSOverride
+*.lnk
+.env.swp
+.env.swo
+
+# Project-specific
+tinymuscle.log
+*.log
+logs/
+tmp/
+temp/
+cache/
+
+# Testing & Coverage
+coverage/
+.coverage
+*.cover
+*.coverprofile
+htmlcov/
+
+# IDE temp files
+.classpath
+.c9/
+*.launch
+.scalafmt.conf
+.tern-port
+.vscode-test
+.yarn/install-state.gz
+
+# Local development
+.DS_Store
+debug.log

@@ -23,6 +23,14 @@ Traditional scrapers break the moment a developer renames a CSS class.
 Scheduled curl jobs get IP-banned. Manual monitoring does not scale past
 two or three portals.
 
+## Features
+
+-**AI-Powered Extraction** - Natural language goals, not brittle CSS selectors -**Smart Relevance Filtering** - Gemini AI scores tenders against your business profile -**Intelligent Deduplication** - Two-key model detects real changes, ignores noise -**Real-time Updates** - SSE streams tenders live to your dashboard -**Zero Configuration Database** - Embedded BBolt, no separate database server
+
+- **Single Binary** - Everything in one executable, easy deployment
+- **Modern Dashboard** - Beautiful React frontend with real-time updates
+- **Live Web Agents** - TinyFish handles JavaScript, pagination, anti-bot measures
+
 ## The Architecture
 
 TinyMuscle makes one architectural bet: delegate all browser complexity to
@@ -172,20 +180,36 @@ tenders are worth the deeper read.
 - Portals requiring authenticated sessions with MFA
 - High-frequency scenarios where milliseconds matter
 
+## Quick Start
 
+### Prerequisites
 
-## Running
+- **Go 1.25+** - [Download](https://golang.org/dl/)
+- **Node.js 18+** - [Download](https://nodejs.org/)
+- **TinyFish API Key** - Get one at [tinyfish.io](https://tinyfish.io) (required for live agents)
+- **Gemini API Key** - Get one at [makersuite.google.com/app/apikey](https://makersuite.google.com/app/apikey) (optional, for AI relevance scoring)
+
+### Installation
 
 ### Quick start (no Makefile)
 
 ```bash
+# Clone the repository
 git clone https://github.com/Emmanuel326/tinymuscle
 cd tinymuscle
+
+# Configure environment
 cp .env.example .env
 # set TINYFISH_API_KEY and GEMINI_API_KEY
 
 go build -o tinymuscle ./cmd/main.go
-export $(cat .env | xargs) && ./tinymuscle
+
+# Install frontend dependencies
+cd tenderwatch-frontend
+npm install
+
+# Return to project root
+cd ..
 ```
 
 ### Using Make (recommended)
@@ -246,11 +270,27 @@ ADDR               optional    HTTP listen address (default: :8080)
 USE_MOCK           optional    Set to true to bypass TinyFish for local dev
 ```
 
-*not required when USE_MOCK=true
+**Note:** `TINYFISH_API_KEY` is not required when `USE_MOCK=true`
 
-## API
+### Running the Application
 
-### Register a portal
+```bash
+# Terminal 1: Start the backend
+export $(cat .env | xargs)
+./tinymuscle
+
+# Terminal 2: Start the frontend development server
+cd tenderwatch-frontend
+npm run dev
+```
+
+Access the dashboard at `http://localhost:5173`
+
+## API Reference
+
+### Register a Portal
+
+Enable AI relevance scoring by providing a business profile:
 
 ```bash
 curl -s -X POST http://localhost:8080/portals \
@@ -280,25 +320,25 @@ curl -s -X POST http://localhost:8080/portals \
   }'
 ```
 
-### List all portals
+### List All Portals
 
 ```bash
 curl -s http://localhost:8080/portals
 ```
 
-### Delete a portal
+### Delete a Portal
 
 ```bash
 curl -s -X DELETE http://localhost:8080/portals/ungm
 ```
 
-### List all tenders
+### List All Tenders
 
 ```bash
 curl -s http://localhost:8080/tenders | python3 -m json.tool
 ```
 
-### List tenders by portal
+### List Tenders by Portal
 
 ```bash
 curl -s http://localhost:8080/tenders/ungm | python3 -m json.tool
@@ -373,10 +413,7 @@ A heartbeat comment is sent every 30 seconds to survive proxy timeouts.
     "Tax compliance certificate",
     "Itemised price quotation"
   ],
-  "evaluation_criteria": [
-    "Technical compliance 40%",
-    "Price 60%"
-  ],
+  "evaluation_criteria": ["Technical compliance 40%", "Price 60%"],
   "estimated_value": "",
   "contact_person": "procurement.lbr@undp.org",
   "qualifies": true,
@@ -413,5 +450,49 @@ tinymuscle/
 └── store/       BBolt, two-key deduplication, version tracking, analyses
 ```
 
-## Built for the TinyFish $2M Pre-Accelerator Hackathon 2026
+## Dashboard Features
 
+The **TenderWatch** frontend is a modern React application with real-time updates:
+
+### Dashboard Home
+
+- **Live Statistics** - Total tenders, new opportunities, and updated tenders at a glance
+- **Real-time Notifications** - Toast alerts for new and updated tenders
+- **Live Feed Status** - Visual indicator showing connection status to the SSE event stream
+
+### Search & Filter
+
+- **Full-text Search** - Search by tender title, reference number, or issuing entity
+- **Status Filtering** - Filter by All / New / Updated tenders
+- **Live Mode Toggle** - Switch between viewing all tenders or just the latest 20
+
+### Portal Management
+
+- **Add Portals** - Register new procurement portals with a clean form interface
+- **AI Relevance Filtering** - (Optional) Configure business profile and relevance threshold
+- **Portal List** - View active portals with crawl intervals and filtering status
+- **Delete Portals** - Remove portals you no longer need
+
+### Tender Viewing
+
+- **Tender Cards** - Rich cards displaying:
+  - Title and Issuing Entity
+  - Deadline with visual warnings for approaching deadlines
+  - Estimated Value (if available)
+  - Relevance Score (if AI filtering enabled)
+  - Direct link to source
+  - Version and update timestamp
+- **Status Badges** - Visual indicators for new (🆕) and updated (📝) tenders
+
+### Front-End Tech Stack
+
+- **React 18** - Modern UI framework
+- **Vite** - Lightning-fast build tool
+- **Tailwind CSS** - Utility-first styling
+- **Lucide React** - Beautiful SVG icons
+- **react-hot-toast** - Non-intrusive notifications
+- **date-fns** - Date formatting and manipulation
+- **Axios** - HTTP client for API calls
+- **Server-Sent Events (SSE)** - Real-time bidirectional updates
+
+## Built for the TinyFish $2M Pre-Accelerator Hackathon 2026
