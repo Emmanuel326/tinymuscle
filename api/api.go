@@ -1,14 +1,18 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/Emmanuel326/tinymuscle/agent"
+	"github.com/Emmanuel326/tinymuscle/analyzer"
 	"github.com/Emmanuel326/tinymuscle/notifier"
 	"github.com/Emmanuel326/tinymuscle/portals"
 	"github.com/Emmanuel326/tinymuscle/scheduler"
@@ -20,6 +24,8 @@ type Server struct {
 	store     *store.Store
 	scheduler *scheduler.Scheduler
 	notifier  *notifier.Notifier
+	agent     *agent.Agent
+	analyzer  *analyzer.Analyzer
 	router    *chi.Mux
 }
 
@@ -28,11 +34,15 @@ func New(
 	s *store.Store,
 	sc *scheduler.Scheduler,
 	n *notifier.Notifier,
+	a *agent.Agent,
+	az *analyzer.Analyzer,
 ) *Server {
 	srv := &Server{
 		store:     s,
 		scheduler: sc,
 		notifier:  n,
+		agent:     a,
+		analyzer:  az,
 		router:    chi.NewRouter(),
 	}
 	srv.routes()
@@ -60,12 +70,14 @@ func (s *Server) routes() {
 	r.Get("/tenders", s.handleListTenders)
 	r.Get("/tenders/{portalID}", s.handleTendersByPortal)
 
-	// SSE stream — frontend connects here for live updates
+	// analysis
+	r.Post("/tenders/{portalID}/{referenceNumber}/analyze", s.handleAnalyze)
+	r.Get("/tenders/{portalID}/{referenceNumber}/analysis", s.handleGetAnalysis)
+
+	// SSE stream
 	r.Get("/events", s.handleEvents)
 }
 
-// handleCreatePortal accepts a portal definition from the frontend,
-// persists it, and registers it with the scheduler immediately
 func (s *Server) handleCreatePortal(w http.ResponseWriter, r *http.Request) {
 	var p portals.Portal
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
@@ -102,7 +114,6 @@ func (s *Server) handleCreatePortal(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(p)
 }
 
-// handleListPortals returns all registered portals
 func (s *Server) handleListPortals(w http.ResponseWriter, r *http.Request) {
 	raws, err := s.store.GetAllPortals()
 	if err != nil {
@@ -123,7 +134,6 @@ func (s *Server) handleListPortals(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-// handleDeletePortal removes a portal from the store and scheduler
 func (s *Server) handleDeletePortal(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
@@ -140,7 +150,6 @@ func (s *Server) handleDeletePortal(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleListTenders returns all tenders across all portals
 func (s *Server) handleListTenders(w http.ResponseWriter, r *http.Request) {
 	tenders, err := s.store.GetAllTenders()
 	if err != nil {
@@ -152,7 +161,6 @@ func (s *Server) handleListTenders(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(tenders)
 }
 
-// handleTendersByPortal returns tenders for a specific portal
 func (s *Server) handleTendersByPortal(w http.ResponseWriter, r *http.Request) {
 	portalID := chi.URLParam(r, "portalID")
 	tenders, err := s.store.GetTendersByPortal(portalID)
@@ -165,8 +173,104 @@ func (s *Server) handleTendersByPortal(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(tenders)
 }
 
-// handleEvents is the SSE endpoint the frontend connects to
-// for live tender notifications
+func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
+	portalID := chi.URLParam(r, "portalID")
+	refNum := chi.URLParam(r, "referenceNumber")
+
+	tenders, err := s.store.GetTendersByPortal(portalID)
+	if err != nil {
+		http.Error(w, "store error", http.StatusInternalServerError)
+		return
+	}
+
+	var target *store.Tender
+	for i := range tenders {
+		if tenders[i].ReferenceNumber == refNum {
+			target = &tenders[i]
+			break
+		}
+	}
+
+	if target == nil {
+		http.Error(w, "tender not found", http.StatusNotFound)
+		return
+	}
+
+	if target.SourceURL == "" {
+		http.Error(w, "tender has no source URL", http.StatusBadRequest)
+		return
+	}
+
+	portalsRaw, err := s.store.GetAllPortals()
+	if err != nil {
+		http.Error(w, "store error", http.StatusInternalServerError)
+		return
+	}
+
+	var businessProfile string
+	for _, raw := range portalsRaw {
+		var p portals.Portal
+		if err := json.Unmarshal(raw, &p); err != nil {
+			continue
+		}
+		if p.ID == portalID {
+			businessProfile = p.BusinessProfile
+			break
+		}
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		log.Printf("[analyze:%s] fetching documents from %s", refNum, target.SourceURL)
+
+		content, err := s.agent.FetchDocument(ctx, target.SourceURL)
+		if err != nil {
+			log.Printf("[analyze:%s] fetch failed: %v", refNum, err)
+			return
+		}
+
+		log.Printf("[analyze:%s] document fetched — %d chars", refNum, len(content))
+
+		analysis, err := s.analyzer.Analyze(ctx, *target, content, businessProfile)
+		if err != nil {
+			log.Printf("[analyze:%s] analysis failed: %v", refNum, err)
+			return
+		}
+
+		log.Printf("[analyze:%s] analysis complete — qualifies: %v", refNum, analysis.Qualifies)
+
+		data, err := json.Marshal(analysis)
+		if err != nil {
+			log.Printf("[analyze:%s] marshal failed: %v", refNum, err)
+			return
+		}
+
+		s.store.SaveAnalysis(portalID+":"+refNum, data)
+		log.Printf("[analyze:%s] saved to store", refNum)
+	}()
+
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "analysis started — poll GET /tenders/" + portalID + "/" + refNum + "/analysis",
+	})
+}
+
+func (s *Server) handleGetAnalysis(w http.ResponseWriter, r *http.Request) {
+	portalID := chi.URLParam(r, "portalID")
+	refNum := chi.URLParam(r, "referenceNumber")
+
+	data, err := s.store.GetAnalysis(portalID + ":" + refNum)
+	if err != nil {
+		http.Error(w, "analysis not found — trigger POST first", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data)
+}
+
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -182,7 +286,6 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	ch := s.notifier.Subscribe()
 	defer s.notifier.Unsubscribe(ch)
 
-	// send a heartbeat every 30s to keep the connection alive
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -205,7 +308,6 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// cors is a minimal CORS middleware for the frontend
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")

@@ -41,12 +41,18 @@ TinyFish (browser agent)
     ↓  SSE stream — partial results committed in real time
 Extractor (raw JSON → Tender structs)
     ↓  shape-agnostic — handles flat arrays and nested objects
-Gemini Flash (relevance scoring against business profile)
+Gemini 2.5 Flash (relevance scoring against business profile)
     ↓  single LLM call per batch — not per tender
 BBolt (two-key deduplication)
     ↓  primary key: portalID + referenceNumber
     ↓  version key: SHA256 of content fields
 SSE broadcast → Dashboard
+    ↓  on demand
+TinyFish (document fetcher)
+    ↓  navigates to tender notice, finds and extracts all documents
+Gemini 2.5 Flash (analyzer)
+    ↓  reads documents against business profile
+Analysis: summary, eligibility, required docs, draft bid response
 ```
 
 Each stage has one job. Nothing crosses boundaries. The scheduler does not
@@ -105,10 +111,31 @@ infrastructure, consultancy services. An ICT firm does not need to know
 about the furniture tender.
 
 When a portal is registered with a `business_profile`, every extracted
-tender batch is scored by Gemini Flash against that profile in a single
+tender batch is scored by Gemini 2.5 Flash against that profile in a single
 API call. Only tenders above `relevance_threshold` (default: 60/100) are
 stored and surfaced. When no `business_profile` is provided, all tenders
 are kept. The system degrades gracefully rather than failing.
+
+## The Intelligence Model
+
+Finding a tender is the beginning, not the end. Once a relevant tender is
+detected, TinyMuscle can go deeper on demand.
+
+A POST to `/tenders/{portalID}/{referenceNumber}/analyze` triggers a second
+TinyFish session that navigates to the tender notice page, finds all attached
+documents — PDFs, Word files, tender specifications — and extracts their full
+text content. Gemini 2.5 Flash then reads that content against the registered
+business profile and returns:
+
+- Plain English summary of what the issuing entity wants
+- Eligibility criteria — do you qualify?
+- Required documents checklist
+- Evaluation criteria — how they score bids
+- Contact person and submission details
+- A ready-to-edit draft bid response letter
+
+The analysis is stored in BBolt and served via GET. The business owner opens
+one screen and knows exactly what to do.
 
 ## Tradeoffs
 
@@ -134,18 +161,24 @@ its UI, nothing in TinyMuscle breaks. The tradeoff is dependency on
 TinyFish's interpretation accuracy — a better failure mode than maintaining
 hundreds of brittle selectors.
 
+**On-demand analysis over automatic.** Document analysis is triggered
+explicitly, not on every new tender. Not every tender warrants deep
+analysis, and TinyFish sessions are not free. The business decides which
+tenders are worth the deeper read.
+
 ## What This Is Good At
 
 - Portals with aggressive anti-bot measures
 - Sites that require multi-step navigation to reach listings
 - Paginated results across an unknown number of pages
 - Any situation where the cost of a missed opportunity exceeds the cost of running the pipeline
+- Turning raw tender documents into actionable procurement intelligence
 
 ## What This Is Not Good At
 
 - Real-time data with sub-minute latency — TinyFish sessions take 1-3 minutes per portal
 - Portals requiring authenticated sessions with MFA
-- Extracting data from PDFs linked within tender listings
+- High-frequency scenarios where milliseconds matter
 
 ## Quick Start
 
@@ -158,6 +191,8 @@ hundreds of brittle selectors.
 
 ### Installation
 
+### Quick start (no Makefile)
+
 ```bash
 # Clone the repository
 git clone https://github.com/Emmanuel326/tinymuscle
@@ -165,9 +200,8 @@ cd tinymuscle
 
 # Configure environment
 cp .env.example .env
-# Edit .env and add your API keys
+# set TINYFISH_API_KEY and GEMINI_API_KEY
 
-# Build the backend
 go build -o tinymuscle ./cmd/main.go
 
 # Install frontend dependencies
@@ -178,14 +212,62 @@ npm install
 cd ..
 ```
 
-### Environment Variables
+### Using Make (recommended)
 
 ```bash
-TINYFISH_API_KEY=required       # TinyFish Web Agent API key
-GEMINI_API_KEY=optional         # Gemini API key for relevance scoring
-DB_PATH=tinymuscle.db           # BBolt database path
-ADDR=:8080                      # HTTP listen address
-USE_MOCK=false                  # Set to true to bypass TinyFish for local dev
+# build binary
+make build
+
+# run with environment variables
+make run
+```
+
+### Cross compile (multi-platform binaries)
+
+```bash
+make cross
+```
+
+Outputs:
+
+```
+build/
+  tinymuscle-linux-amd64
+  tinymuscle-linux-arm64
+  tinymuscle-darwin-amd64
+  tinymuscle-darwin-arm64
+  tinymuscle-windows-amd64.exe
+```
+
+### Install globally
+
+```bash
+make install
+```
+
+Installs to:
+
+```
+$GOPATH/bin/tinymuscle
+```
+
+---
+
+TinyMuscle remains a **single binary system**:
+
+```bash
+./tinymuscle        # Linux / macOS
+.\tinymuscle.exe    # Windows
+```
+
+## Environment Variables
+
+```
+TINYFISH_API_KEY   required*   TinyFish Web Agent API key
+GEMINI_API_KEY     optional    Gemini 2.5 Flash API key
+DB_PATH            optional    BBolt database path (default: tinymuscle.db)
+ADDR               optional    HTTP listen address (default: :8080)
+USE_MOCK           optional    Set to true to bypass TinyFish for local dev
 ```
 
 **Note:** `TINYFISH_API_KEY` is not required when `USE_MOCK=true`
@@ -224,7 +306,7 @@ curl -s -X POST http://localhost:8080/portals \
   }'
 ```
 
-### Register a Portal Without AI Filtering
+### Register a portal (mock mode — no AI filtering)
 
 ```bash
 curl -s -X POST http://localhost:8080/portals \
@@ -262,7 +344,25 @@ curl -s http://localhost:8080/tenders | python3 -m json.tool
 curl -s http://localhost:8080/tenders/ungm | python3 -m json.tool
 ```
 
-### Subscribe to Live Events (Server-Sent Events)
+### Trigger deep analysis on a tender
+
+```bash
+curl -s -X POST \
+  http://localhost:8080/tenders/ungm/UNDP-LBR-00870/analyze
+```
+
+Returns 202 immediately. TinyFish fetches the documents, Gemini reads them.
+Poll the GET endpoint until the analysis appears.
+
+### Get tender analysis
+
+```bash
+curl -s \
+  http://localhost:8080/tenders/ungm/UNDP-LBR-00870/analysis \
+  | python3 -m json.tool
+```
+
+### Connect to the live event stream
 
 ```bash
 curl -s http://localhost:8080/events
@@ -295,7 +395,36 @@ A heartbeat comment is sent every 30 seconds to survive proxy timeouts.
 }
 ```
 
-Status values: `new` | `updated`
+## Analysis Object
+
+```json
+{
+  "tender_id": "ungm:UNDP-LBR-00870",
+  "portal_id": "ungm",
+  "summary": "UNDP Liberia requires a vendor to supply a server and UPS unit for the PPCC office. The procurement is a direct supply of ICT hardware.",
+  "eligibility_criteria": [
+    "Registered company with valid tax compliance certificate",
+    "Proven experience supplying ICT hardware to UN or government entities",
+    "Valid business registration"
+  ],
+  "required_documents": [
+    "Technical proposal",
+    "Company registration certificate",
+    "Tax compliance certificate",
+    "Itemised price quotation"
+  ],
+  "evaluation_criteria": ["Technical compliance 40%", "Price 60%"],
+  "estimated_value": "",
+  "contact_person": "procurement.lbr@undp.org",
+  "qualifies": true,
+  "qualify_reasons": [
+    "Business profile matches ICT hardware supply",
+    "Network infrastructure experience is directly relevant"
+  ],
+  "draft_response": "Dear UNDP Procurement Team, We write in response to tender UNDP-LBR-00870...",
+  "analyzed_at": "2026-03-21T06:30:00Z"
+}
+```
 
 ## Tested Portals
 
@@ -309,43 +438,16 @@ Hacker News Jobs        https://news.ycombinator.com/jobs     10 items   in ~1 m
 
 ```
 tinymuscle/
-├── agent/                   # TinyFish SSE client + mock
-│   ├── agent.go            # Real TinyFish agent
-│   └── mock.go             # Mock agent for testing
-├── api/                     # Chi router, REST handlers
-│   └── api.go              # Server setup
-├── cmd/                     # Binary entrypoint
-│   └── main.go             # App wiring, graceful shutdown
-├── extractor/               # Shape-agnostic JSON → Tender
-│   └── extractor.go        # Field mapping & validation
-├── matcher/                 # Gemini relevance scoring
-│   └── matcher.go          # AI scoring integration
-├── notifier/                # Fan-out SSE broadcaster
-│   └── notifier.go         # Event distribution
-├── portals/                 # Portal type definition
-│   └── portals.go          # Portal struct
-├── scheduler/               # Cron engine, crawl pipeline
-│   └── scheduler.go        # Scheduling & execution
-├── store/                   # BBolt, two-key deduplication
-│   └── store.go            # Database operations
-├── tenderwatch-frontend/    # React + Vite dashboard
-│   ├── src/
-│   │   ├── components/     # TenderCard, PortalManager
-│   │   ├── hooks/          # useSSE for real-time events
-│   │   ├── services/       # API client
-│   │   ├── App.jsx         # Main dashboard
-│   │   ├── main.jsx        # Entry point
-│   │   ├── index.css       # Tailwind styles
-│   │   └── assets/         # Static files
-│   ├── package.json        # Frontend dependencies
-│   ├── tailwind.config.js  # Tailwind CSS config
-│   ├── vite.config.js      # Vite build config
-│   └── index.html          # HTML template
-├── .env.example             # Environment template
-├── go.mod                   # Go dependencies
-├── go.sum                   # Go checksums
-├── add_test_data.go         # Utility to seed test data
-└── README.md                # This file
+├── agent/       TinyFish SSE client, document fetcher, mock
+├── analyzer/    Gemini document intelligence + draft response
+├── api/         Chi router, REST handlers, SSE endpoint
+├── cmd/         Binary entrypoint, wiring, graceful shutdown
+├── extractor/   Shape-agnostic JSON → Tender normalizer
+├── matcher/     Gemini relevance scoring
+├── notifier/    Fan-out SSE broadcaster, drop semantics for slow clients
+├── portals/     Portal type definition
+├── scheduler/   Cron engine, immediate-fire on registration, crawl pipeline
+└── store/       BBolt, two-key deduplication, version tracking, analyses
 ```
 
 ## Dashboard Features
@@ -394,107 +496,3 @@ The **TenderWatch** frontend is a modern React application with real-time update
 - **Server-Sent Events (SSE)** - Real-time bidirectional updates
 
 ## Built for the TinyFish $2M Pre-Accelerator Hackathon 2026
-
-## Development
-
-### Local Development with Mock Data
-
-To test without a TinyFish API key, use mock mode:
-
-```bash
-# Set USE_MOCK=true in your .env
-export USE_MOCK=true
-export $(cat .env | xargs)./tinymuscle
-```
-
-The mock agent returns sample tender data for testing portal registration and the dashboard.
-
-### Adding Test Data
-
-Add sample tenders to the database:
-
-```bash
-# Run the add_test_data script
-go run add_test_data.go
-```
-
-This populates the BBolt database with test portals and tenders for frontend development.
-
-### Frontend Development
-
-The frontend runs with hot module reloading (HMR):
-
-```bash
-cd tenderwatch-frontend
-npm run dev
-```
-
-Access the dashboard at `http://localhost:5173`. Changes to React components reload instantly.
-
-### Building for Production
-
-**Backend:**
-
-```bash
-go build -o tinymuscle ./cmd/main.go
-```
-
-## Troubleshooting
-
-### Backend Issues
-
-**"TINYFISH_API_KEY is required"**
-
-- Set `USE_MOCK=true` if you don't have a TinyFish key, or get one at [tinyfish.io](https://tinyfish.io)
-
-**"Failed to connect to event stream"**
-
-- Ensure the backend is running on port 8080
-- Check firewall rules are not blocking localhost connections
-- Verify `ADDR` environment variable is set correctly
-
-**"Database locked"**
-
-- BBolt can only have one writer at a time. Ensure only one instance of tinymuscle is running.
-- Check `DB_PATH` environment variable — multiple instances might be using different database files.
-
-### Frontend Issues
-
-**"Failed to load tenders" or "Disconnected" status**
-
-- Verify the backend is running: `curl http://localhost:8080/portals`
-- Check that `ADDR=:8080` matches the backend server address
-- If running on a different machine, update the API URL in `tenderwatch-frontend/src/services/api.js`
-
-**SSE connection keeps failing**
-
-- Check browser console for CORS errors
-- Verify backend is listening on 8080: `lsof -i :8080` or `netstat -an | grep 8080`
-- Ensure no firewall/proxy is blocking SSE connections
-
-**Node modules issues**
-
-- Clear and reinstall: `rm -rf node_modules package-lock.json && npm install`
-
-## Performance Notes
-
-- **Crawl Time**: TinyFish sessions typically take 1-3 minutes per portal depending on site complexity
-- **Database** - BBolt is single-file and has no server overhead, but is optimized for batch writes and read-on-request patterns
-- **Relevance Scoring**: Gemini API calls are batched per crawl cycle, not per tender (single call for all new tenders)
-- **Memory**: Typical runtime uses <100MB for the backend with 10K+ tenders in the database
-
-## Contributing
-
-TinyMuscle is designed for extensibility:
-
-- **New Portals** - Register via API, no code changes needed
-- **Custom Extractors** - Modify `extractor/extractor.go` for new field patterns
-- **Custom Matchers** - Beyond Gemini, implement the `Matcher` interface in `matcher/matcher.go`
-- **Frontend Customization** - All React components in `tenderwatch-frontend/src/components/`
-
-## Support
-
-- **Issues & Features** - GitHub Issues
-- **Questions** - Start a Discussion
-- **TinyFish Docs** - [docs.tinyfish.io](https://docs.tinyfish.io)
-- **Gemini API Docs** - [ai.google.dev](https://ai.google.dev)

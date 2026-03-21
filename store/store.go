@@ -215,3 +215,33 @@ func hash(t Tender) string {
 	h.Write([]byte(t.EstimatedValue))
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
+
+// SaveAnalysis persists a tender analysis
+func (s *Store) SaveAnalysis(id string, data []byte) error {
+return s.db.Update(func(tx *bolt.Tx) error {
+b, err := tx.CreateBucketIfNotExists([]byte("analyses"))
+if err != nil {
+return err
+}
+return b.Put([]byte(id), data)
+})
+}
+
+// GetAnalysis retrieves a tender analysis by id
+func (s *Store) GetAnalysis(id string) ([]byte, error) {
+var result []byte
+err := s.db.View(func(tx *bolt.Tx) error {
+b := tx.Bucket([]byte("analyses"))
+if b == nil {
+return fmt.Errorf("analyses bucket not found")
+}
+v := b.Get([]byte(id))
+if v == nil {
+return fmt.Errorf("analysis not found")
+}
+result = make([]byte, len(v))
+copy(result, v)
+return nil
+})
+return result, err
+}
