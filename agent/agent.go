@@ -17,7 +17,7 @@ import (
 const (
 	endpoint       = "https://agent.tinyfish.ai/v1/automation/run-sse"
 	requestTimeout = 5 * time.Minute
-        CrawlTimeout   = requestTimeout
+	CrawlTimeout   = requestTimeout
 )
 
 // SSEEvent represents a single event from the TinyFish SSE stream
@@ -30,12 +30,12 @@ type SSEEvent struct {
 
 // RunRequest is the payload sent to TinyFish
 type RunRequest struct {
-	URL           string        `json:"url"`
-	Goal          string        `json:"goal"`
-	BrowserProfile string       `json:"browser_profile"`
-	ProxyConfig   ProxyConfig   `json:"proxy_config"`
-	Headers       map[string]string `json:"headers,omitempty"`
-	Cookies       map[string]string `json:"cookies,omitempty"`
+	URL            string            `json:"url"`
+	Goal           string            `json:"goal"`
+	BrowserProfile string            `json:"browser_profile"`
+	ProxyConfig    ProxyConfig       `json:"proxy_config"`
+	Headers        map[string]string `json:"headers,omitempty"`
+	Cookies        map[string]string `json:"cookies,omitempty"`
 }
 
 // ProxyConfig tells TinyFish which geo to proxy through
