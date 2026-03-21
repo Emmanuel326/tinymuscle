@@ -172,15 +172,68 @@ tenders are worth the deeper read.
 - Portals requiring authenticated sessions with MFA
 - High-frequency scenarios where milliseconds matter
 
+
+
 ## Running
+
+### Quick start (no Makefile)
 
 ```bash
 git clone https://github.com/Emmanuel326/tinymuscle
 cd tinymuscle
 cp .env.example .env
 # set TINYFISH_API_KEY and GEMINI_API_KEY
+
 go build -o tinymuscle ./cmd/main.go
 export $(cat .env | xargs) && ./tinymuscle
+```
+
+### Using Make (recommended)
+
+```bash
+# build binary
+make build
+
+# run with environment variables
+make run
+```
+
+### Cross compile (multi-platform binaries)
+
+```bash
+make cross
+```
+
+Outputs:
+
+```
+build/
+  tinymuscle-linux-amd64
+  tinymuscle-linux-arm64
+  tinymuscle-darwin-amd64
+  tinymuscle-darwin-arm64
+  tinymuscle-windows-amd64.exe
+```
+
+### Install globally
+
+```bash
+make install
+```
+
+Installs to:
+
+```
+$GOPATH/bin/tinymuscle
+```
+
+---
+
+TinyMuscle remains a **single binary system**:
+
+```bash
+./tinymuscle        # Linux / macOS
+.\tinymuscle.exe    # Windows
 ```
 
 ## Environment Variables
