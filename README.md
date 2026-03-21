@@ -5,9 +5,11 @@ page on the live internet into a monitored, deduplicated, queryable feed —
 with no brittle CSS selectors, no headless Chrome configuration, and no
 per-site maintenance burden.
 
-It was built for African government procurement portals: sites running
-decade-old PHP, behind Cloudflare, with inconsistent pagination, broken SSL,
-and no public API. If it works there, it works anywhere.
+Built for African government procurement portals: sites running decade-old PHP,
+behind Cloudflare, with inconsistent pagination, broken SSL, and no public API.
+If it works there, it works anywhere.
+
+---
 
 ## The Problem
 
@@ -23,13 +25,7 @@ Traditional scrapers break the moment a developer renames a CSS class.
 Scheduled curl jobs get IP-banned. Manual monitoring does not scale past
 two or three portals.
 
-## Features
-
--**AI-Powered Extraction** - Natural language goals, not brittle CSS selectors -**Smart Relevance Filtering** - Gemini AI scores tenders against your business profile -**Intelligent Deduplication** - Two-key model detects real changes, ignores noise -**Real-time Updates** - SSE streams tenders live to your dashboard -**Zero Configuration Database** - Embedded BBolt, no separate database server
-
-- **Single Binary** - Everything in one executable, easy deployment
-- **Modern Dashboard** - Beautiful React frontend with real-time updates
-- **Live Web Agents** - TinyFish handles JavaScript, pagination, anti-bot measures
+---
 
 ## The Architecture
 
@@ -57,208 +53,127 @@ Analysis: summary, eligibility, required docs, draft bid response
 
 Each stage has one job. Nothing crosses boundaries. The scheduler does not
 know about HTTP. The extractor does not know about storage. The notifier
-does not know about portals. This is not accidental — it is the only way
-to keep a system like this maintainable as the number of portals grows.
+does not know about portals.
+
+---
 
 ## The Deduplication Model
 
-Most web intelligence tools key by URL or by a hash of the entire document.
-Both are wrong.
-
-Keying by URL breaks when a portal repaginates. Keying by full document hash
-produces false positives when a timestamp in the page footer changes. Neither
-tells you what changed or why it matters.
-
 TinyMuscle uses a two-key model:
 
-- **Primary key**: `portalID:referenceNumber` — stable identity derived from
-  the source document's own reference system.
-- **Version key**: SHA256 of title + issuing entity + deadline + estimated
-  value. Only fields that matter to a bidder contribute to the hash.
+- **Primary key**: `portalID:referenceNumber` — stable identity from the source
+- **Version key**: SHA256 of title + issuing entity + deadline + estimated value
 
-On every crawl, three outcomes are possible:
+On every crawl:
 
 1. Key missing → `status: new` → alert fired
 2. Key present, hash unchanged → silent, no write
 3. Key present, hash changed → `status: updated`, version incremented → alert fired
 
-An addendum that extends a deadline is an update, not a new tender. A
-re-crawl of an unchanged page produces zero writes.
+An addendum that extends a deadline is an update, not a new tender.
+A re-crawl of an unchanged page produces zero writes.
 
-## The Agent Model
-
-TinyMuscle does not scrape. It issues goals.
-
-Each portal registration includes a natural language goal:
-
-```json
-{
-  "goal": "Navigate to the procurement notices page, extract all visible open tenders. For each tender extract: title, reference_number, issuing_entity, deadline, estimated_value, source_url. Return as JSON array."
-}
-```
-
-TinyFish receives this goal and executes a stateful browser session:
-JavaScript rendering, pagination clicks, Cloudflare bypass, session
-management. It streams results back via SSE. TinyMuscle commits partial
-results to BBolt as the stream arrives — a connection drop halfway through
-a 200-tender paginated portal loses nothing already extracted.
-
-## The Relevance Model
-
-Raw extraction produces signal and noise in equal measure. A procurement
-portal lists everything: office furniture, road construction, ICT
-infrastructure, consultancy services. An ICT firm does not need to know
-about the furniture tender.
-
-When a portal is registered with a `business_profile`, every extracted
-tender batch is scored by Gemini 2.5 Flash against that profile in a single
-API call. Only tenders above `relevance_threshold` (default: 60/100) are
-stored and surfaced. When no `business_profile` is provided, all tenders
-are kept. The system degrades gracefully rather than failing.
+---
 
 ## The Intelligence Model
 
-Finding a tender is the beginning, not the end. Once a relevant tender is
-detected, TinyMuscle can go deeper on demand.
+Finding a tender is the beginning, not the end.
 
-A POST to `/tenders/{portalID}/{referenceNumber}/analyze` triggers a second
-TinyFish session that navigates to the tender notice page, finds all attached
-documents — PDFs, Word files, tender specifications — and extracts their full
-text content. Gemini 2.5 Flash then reads that content against the registered
-business profile and returns:
+`POST /tenders/{portalID}/{referenceNumber}/analyze` triggers a TinyFish
+session that navigates to the tender notice page, finds all attached documents,
+and extracts their full text. Gemini 2.5 Flash reads that content against the
+business profile and returns a structured analysis including a ready-to-edit
+draft bid response.
 
-- Plain English summary of what the issuing entity wants
-- Eligibility criteria — do you qualify?
-- Required documents checklist
-- Evaluation criteria — how they score bids
-- Contact person and submission details
-- A ready-to-edit draft bid response letter
+**TinyMuscle never auto-submits.** The draft response is for human review.
+The final decision is always the user's.
 
-The analysis is stored in BBolt and served via GET. The business owner opens
-one screen and knows exactly what to do.
+---
 
 ## Tradeoffs
 
-**BBolt over Postgres.** BBolt is an embedded key-value store. It requires
-no server, no connection pool, no migrations. The entire database is a
-single file. For a pipeline that writes in batches and reads on API
-requests, BBolt's sequential write performance is more than adequate.
-The tradeoff is no SQL — but the query patterns here do not need it.
+**BBolt over Postgres.** No server, no migrations, single file on disk.
+The query patterns here do not need SQL.
 
-**Single binary.** There is no separate scheduler process, no message
-queue, no worker pool. The scheduler, API server, and crawl pipeline run
-in the same process. A single `./tinymuscle` starts everything. A single
-SIGTERM stops it cleanly.
+**Single binary.** No separate scheduler, no message queue, no worker pool.
+One `./tinymuscle` starts everything. One SIGTERM stops it cleanly.
 
-**SSE over WebSockets.** The dashboard receives tender events over
-Server-Sent Events, not WebSockets. SSE is unidirectional, HTTP/1.1
-compatible, and trivially reconnectable. The dashboard does not send data
-to the server over the event channel — it has the REST API for that.
+**SSE over WebSockets.** Unidirectional, HTTP/1.1 compatible, trivially
+reconnectable. The dashboard does not need to send data over the event channel.
 
-**Goal-based extraction over CSS selectors.** The extractor has no
-knowledge of any specific portal's HTML structure. When a portal redesigns
-its UI, nothing in TinyMuscle breaks. The tradeoff is dependency on
-TinyFish's interpretation accuracy — a better failure mode than maintaining
-hundreds of brittle selectors.
+**Goal-based extraction over CSS selectors.** When a portal redesigns its UI,
+nothing in TinyMuscle breaks.
 
-**On-demand analysis over automatic.** Document analysis is triggered
-explicitly, not on every new tender. Not every tender warrants deep
-analysis, and TinyFish sessions are not free. The business decides which
-tenders are worth the deeper read.
+**On-demand analysis over automatic.** Not every tender warrants deep analysis.
+The business decides which tenders are worth the deeper read.
+
+---
 
 ## What This Is Good At
 
 - Portals with aggressive anti-bot measures
-- Sites that require multi-step navigation to reach listings
+- Sites requiring multi-step navigation to reach listings
 - Paginated results across an unknown number of pages
-- Any situation where the cost of a missed opportunity exceeds the cost of running the pipeline
 - Turning raw tender documents into actionable procurement intelligence
 
 ## What This Is Not Good At
 
-- Real-time data with sub-minute latency — TinyFish sessions take 1-3 minutes per portal
-- Portals requiring authenticated sessions with MFA
+- Sub-minute latency — TinyFish sessions take 1-3 minutes per portal
+- Portals requiring MFA-authenticated sessions
 - High-frequency scenarios where milliseconds matter
+
+---
 
 ## Quick Start
 
 ### Prerequisites
 
-- **Go 1.25+** - [Download](https://golang.org/dl/)
-- **Node.js 18+** - [Download](https://nodejs.org/)
-- **TinyFish API Key** - Get one at [tinyfish.io](https://tinyfish.io) (required for live agents)
-- **Gemini API Key** - Get one at [makersuite.google.com/app/apikey](https://makersuite.google.com/app/apikey) (optional, for AI relevance scoring)
+- Go 1.25+
+- Node.js 18+ (for frontend)
+- TinyFish API key — from [tinyfish.ai](https://tinyfish.ai)
+- Gemini API key — from [aistudio.google.com](https://aistudio.google.com) (optional)
 
-### Installation
-
-### Quick start (no Makefile)
+### Setup
 
 ```bash
-# Clone the repository
 git clone https://github.com/Emmanuel326/tinymuscle
 cd tinymuscle
-
-# Configure environment
 cp .env.example .env
-# set TINYFISH_API_KEY and GEMINI_API_KEY
+# edit .env — set TINYFISH_API_KEY and GEMINI_API_KEY
+```
 
+### Build and run backend
+
+```bash
 go build -o tinymuscle ./cmd/main.go
+export $(cat .env | xargs) && ./tinymuscle
+```
 
-# Install frontend dependencies
+### Run frontend
+
+```bash
 cd tenderwatch-frontend
 npm install
-
-# Return to project root
-cd ..
+npm run dev
 ```
 
-### Using Make (recommended)
+Dashboard available at `http://localhost:5173`
+Backend API at `http://localhost:8080`
+
+### Cross-compile
 
 ```bash
-# build binary
-make build
+# Linux
+GOOS=linux GOARCH=amd64 go build -o tinymuscle ./cmd/main.go
 
-# run with environment variables
-make run
-```
+# macOS
+GOOS=darwin GOARCH=arm64 go build -o tinymuscle ./cmd/main.go
 
-### Cross compile (multi-platform binaries)
-
-```bash
-make cross
-```
-
-Outputs:
-
-```
-build/
-  tinymuscle-linux-amd64
-  tinymuscle-linux-arm64
-  tinymuscle-darwin-amd64
-  tinymuscle-darwin-arm64
-  tinymuscle-windows-amd64.exe
-```
-
-### Install globally
-
-```bash
-make install
-```
-
-Installs to:
-
-```
-$GOPATH/bin/tinymuscle
+# Windows
+GOOS=windows GOARCH=amd64 go build -o tinymuscle.exe ./cmd/main.go
 ```
 
 ---
-
-TinyMuscle remains a **single binary system**:
-
-```bash
-./tinymuscle        # Linux / macOS
-.\tinymuscle.exe    # Windows
-```
 
 ## Environment Variables
 
@@ -267,30 +182,27 @@ TINYFISH_API_KEY   required*   TinyFish Web Agent API key
 GEMINI_API_KEY     optional    Gemini 2.5 Flash API key
 DB_PATH            optional    BBolt database path (default: tinymuscle.db)
 ADDR               optional    HTTP listen address (default: :8080)
-USE_MOCK           optional    Set to true to bypass TinyFish for local dev
+USE_MOCK           optional    true = bypass TinyFish, use mock agent
 ```
 
-**Note:** `TINYFISH_API_KEY` is not required when `USE_MOCK=true`
+*not required when USE_MOCK=true
 
-### Running the Application
-
-```bash
-# Terminal 1: Start the backend
-export $(cat .env | xargs)
-./tinymuscle
-
-# Terminal 2: Start the frontend development server
-cd tenderwatch-frontend
-npm run dev
-```
-
-Access the dashboard at `http://localhost:5173`
+---
 
 ## API Reference
 
-### Register a Portal
+All endpoints return JSON. All POST bodies are JSON.
+Reference numbers containing `/` must be URL-encoded as `%2F` in the path.
 
-Enable AI relevance scoring by providing a business profile:
+---
+
+### Portals
+
+#### POST /portals — Register a portal
+
+**Frontend:** Render a form with these fields. `interval_min` defaults to 60.
+`business_profile` and `relevance_threshold` are optional — when omitted,
+all tenders are kept without AI filtering.
 
 ```bash
 curl -s -X POST http://localhost:8080/portals \
@@ -306,193 +218,327 @@ curl -s -X POST http://localhost:8080/portals \
   }'
 ```
 
-### Register a portal (mock mode — no AI filtering)
+**Response: 201 Created**
 
-```bash
-curl -s -X POST http://localhost:8080/portals \
-  -H "Content-Type: application/json" \
-  -d '{
-    "id": "ungm",
-    "name": "UN Global Marketplace",
-    "url": "https://www.ungm.org/Public/Notice",
-    "goal": "Navigate to the procurement notices page, extract all visible open tenders. For each tender extract: title, reference_number, issuing_entity, deadline, estimated_value, source_url. Return as JSON array.",
-    "interval_min": 60
-  }'
+```json
+{
+  "id": "ungm",
+  "name": "UN Global Marketplace",
+  "url": "https://www.ungm.org/Public/Notice",
+  "goal": "...",
+  "interval_min": 60,
+  "business_profile": "...",
+  "relevance_threshold": 60
+}
 ```
 
-### List All Portals
+**Frontend notes:**
+- `id` — user-defined slug, no spaces, e.g. `ungm`, `treasury_ke`
+- `goal` — natural language instruction to TinyFish. Keep it specific.
+- `interval_min` — how often to crawl. Minimum recommended: 30.
+- `business_profile` — plain English description of the business. Gemini uses this to score relevance.
+- `relevance_threshold` — 0-100. Tenders scoring below this are dropped. Default: 60.
+- On success, the backend immediately fires a crawl in the background. No user action needed.
+
+---
+
+#### GET /portals — List all portals
+
+**Frontend:** Render a portal management list. Show name, URL, interval, and a delete button.
 
 ```bash
 curl -s http://localhost:8080/portals
 ```
 
-### Delete a Portal
+**Response: 200 OK**
+
+```json
+[
+  {
+    "id": "ungm",
+    "name": "UN Global Marketplace",
+    "url": "https://www.ungm.org/Public/Notice",
+    "goal": "...",
+    "interval_min": 60,
+    "business_profile": "...",
+    "relevance_threshold": 60
+  }
+]
+```
+
+---
+
+#### DELETE /portals/{id} — Remove a portal
+
+**Frontend:** Confirm dialog → call this → remove from list.
 
 ```bash
 curl -s -X DELETE http://localhost:8080/portals/ungm
 ```
 
-### List All Tenders
+**Response: 204 No Content**
+
+---
+
+### Tenders
+
+#### GET /tenders — All tenders across all portals
+
+**Frontend:** Main tender feed. Poll on page load. Combine with SSE for live updates.
 
 ```bash
 curl -s http://localhost:8080/tenders | python3 -m json.tool
 ```
 
-### List Tenders by Portal
+**Response: 200 OK** — array of tender objects (see Tender Object below)
+
+**Frontend notes:**
+- `status: "new"` — show a green NEW badge
+- `status: "updated"` — show a blue UPDATED badge with version number
+- `deadline` — if `0001-01-01T00:00:00Z` the deadline was not parseable, show "—"
+- `estimated_value` — may be empty string, show "—" if so
+- `source_url` — always link directly to the source portal page
+
+---
+
+#### GET /tenders/{portalID} — Tenders for a specific portal
+
+**Frontend:** Filtered view per portal. Use `portal_id` from the tender object.
 
 ```bash
 curl -s http://localhost:8080/tenders/ungm | python3 -m json.tool
 ```
 
-### Trigger deep analysis on a tender
+**Response: 200 OK** — array of tender objects
+
+---
+
+### Analysis
+
+Analysis is a two-step process. Always POST first, then GET.
+
+#### POST /tenders/{portalID}/{referenceNumber}/analyze — Trigger analysis
+
+**Frontend:** "Analyze" button on tender detail card. Disable the button after
+click and show a loading spinner. Poll the GET endpoint every 30 seconds.
+
+**Important:** Reference numbers containing `/` must be URL-encoded.
+Use `encodeURIComponent(tender.reference_number)` in JavaScript — never encode manually.
 
 ```bash
+# reference number with no slashes
 curl -s -X POST \
-  http://localhost:8080/tenders/ungm/UNDP-LBR-00870/analyze
+  http://localhost:8080/tenders/ungm/30000022713/analyze
+
+# reference number with slashes — encode / as %2F
+curl -s -X POST \
+  "http://localhost:8080/tenders/ungm/RFP%2FHCR%2FSYR%2F2026%2F2390/analyze"
 ```
 
-Returns 202 immediately. TinyFish fetches the documents, Gemini reads them.
-Poll the GET endpoint until the analysis appears.
+**Response: 202 Accepted**
 
-### Get tender analysis
+```json
+{
+  "message": "analysis started — poll GET /tenders/ungm/30000022713/analysis"
+}
+```
+
+**Frontend notes:**
+- 202 means the job started, not that it's done
+- TinyFish fetches the documents, Gemini reads them — takes 2-5 minutes
+- Show a "Analyzing..." state on the button
+- Poll `GET /tenders/{portalID}/{referenceNumber}/analysis` every 30s
+- If GET returns 404, analysis is still running — keep polling
+- If GET returns 200, analysis is ready — render the Analysis Card
+
+**JavaScript pattern:**
+
+```javascript
+const analyze = async (tender) => {
+  const ref = encodeURIComponent(tender.reference_number)
+  await fetch(`/tenders/${tender.portal_id}/${ref}/analyze`, { method: 'POST' })
+
+  // poll until ready
+  const poll = setInterval(async () => {
+    const res = await fetch(`/tenders/${tender.portal_id}/${ref}/analysis`)
+    if (res.ok) {
+      clearInterval(poll)
+      const analysis = await res.json()
+      renderAnalysis(analysis)
+    }
+  }, 30000)
+}
+```
+
+---
+
+#### GET /tenders/{portalID}/{referenceNumber}/analysis — Get analysis result
+
+**Frontend:** Poll this after triggering analyze. Render the Analysis Card when 200 returns.
 
 ```bash
 curl -s \
-  http://localhost:8080/tenders/ungm/UNDP-LBR-00870/analysis \
+  http://localhost:8080/tenders/ungm/30000022713/analysis \
   | python3 -m json.tool
 ```
 
-### Connect to the live event stream
+**Response: 200 OK** — analysis object (see Analysis Object below)
+**Response: 404** — analysis not yet ready, keep polling
+
+---
+
+### Live Events (SSE)
+
+#### GET /events — Live tender stream
+
+**Frontend:** Connect once on page load. Append new tenders to the feed in real time.
+Reconnect automatically on disconnect.
 
 ```bash
 curl -s http://localhost:8080/events
 ```
 
-Events arrive as:
+**Events arrive as:**
 
-```json
-{"type":"new","tender":{...}}
-{"type":"updated","tender":{...}}
+```
+data: {"type":"new","tender":{...tender object...}}
+
+data: {"type":"updated","tender":{...tender object...}}
+
+: heartbeat
 ```
 
-A heartbeat comment is sent every 30 seconds to survive proxy timeouts.
+Heartbeat comment sent every 30 seconds — ignore it, it just keeps the connection alive.
 
-## Tender Object
+**JavaScript pattern:**
+
+```javascript
+const es = new EventSource('http://localhost:8080/events')
+
+es.onmessage = (e) => {
+  const { type, tender } = JSON.parse(e.data)
+  if (type === 'new') prependToFeed(tender)
+  if (type === 'updated') updateInFeed(tender)
+}
+
+es.onerror = () => {
+  // EventSource reconnects automatically — no action needed
+}
+```
+
+---
+
+## Data Objects
+
+### Tender Object
 
 ```json
 {
-  "reference_number": "UNDP-LBR-00870",
+  "reference_number": "30000022713",
   "portal_id": "ungm",
-  "title": "Procurement of server and UPS for PPCC Liberia",
-  "issuing_entity": "UNDP",
-  "deadline": "2026-03-21T10:00:00Z",
+  "title": "Servicios de Digitalización de documentos",
+  "issuing_entity": "IOM",
+  "deadline": "2026-03-22T00:00:00Z",
   "estimated_value": "",
-  "source_url": "https://www.ungm.org/Public/Notice/293698",
-  "content_hash": "0cf3bb44...",
+  "source_url": "https://www.ungm.org/Public/Notice/294509",
+  "content_hash": "05351fd3...",
   "version": 1,
-  "last_updated": "2026-03-21T04:57:45Z",
+  "last_updated": "2026-03-21T19:45:26Z",
   "status": "new"
 }
 ```
 
-## Analysis Object
+| Field | Type | Notes |
+|---|---|---|
+| reference_number | string | Use with encodeURIComponent in URLs |
+| portal_id | string | Matches the portal id it came from |
+| title | string | Display as card heading |
+| issuing_entity | string | Display as subtitle |
+| deadline | string (ISO 8601) | `0001-01-01T00:00:00Z` means unparseable — show "—" |
+| estimated_value | string | May be empty — show "—" |
+| source_url | string | Always link to this |
+| content_hash | string | Internal — do not display |
+| version | int | Show if > 1, indicates tender was updated |
+| last_updated | string (ISO 8601) | Show as relative time |
+| status | string | `new` or `updated` |
+
+---
+
+### Analysis Object
 
 ```json
 {
-  "tender_id": "ungm:UNDP-LBR-00870",
+  "tender_id": "ungm:30000022713",
   "portal_id": "ungm",
-  "summary": "UNDP Liberia requires a vendor to supply a server and UPS unit for the PPCC office. The procurement is a direct supply of ICT hardware.",
+  "summary": "IOM requires a firm to digitize documents...",
   "eligibility_criteria": [
-    "Registered company with valid tax compliance certificate",
-    "Proven experience supplying ICT hardware to UN or government entities",
-    "Valid business registration"
+    "Valid company registration",
+    "Experience in document digitization"
   ],
   "required_documents": [
     "Technical proposal",
     "Company registration certificate",
-    "Tax compliance certificate",
-    "Itemised price quotation"
+    "Price quotation"
   ],
-  "evaluation_criteria": ["Technical compliance 40%", "Price 60%"],
+  "evaluation_criteria": [
+    "Technical compliance 40%",
+    "Price 60%"
+  ],
+  "deadline": "2026-03-22T00:00:00Z",
   "estimated_value": "",
-  "contact_person": "procurement.lbr@undp.org",
+  "contact_person": "procurement@iom.int",
   "qualifies": true,
   "qualify_reasons": [
-    "Business profile matches ICT hardware supply",
-    "Network infrastructure experience is directly relevant"
+    "ICT background aligns with digitization work",
+    "Government systems integration experience is relevant"
   ],
-  "draft_response": "Dear UNDP Procurement Team, We write in response to tender UNDP-LBR-00870...",
-  "analyzed_at": "2026-03-21T06:30:00Z"
+  "draft_response": "Dear IOM Procurement Unit, We write in response to...",
+  "analyzed_at": "2026-03-21T19:50:00Z"
 }
 ```
+
+| Field | Type | Frontend guidance |
+|---|---|---|
+| summary | string | Show as paragraph at top of Analysis Card |
+| eligibility_criteria | []string | Render as checklist |
+| required_documents | []string | Render as checklist with checkboxes |
+| evaluation_criteria | []string | Render as numbered list |
+| qualifies | bool | Show green YES / red NO badge prominently |
+| qualify_reasons | []string | Show below the qualifies badge |
+| draft_response | string | Render in a textarea. Add "Copy" button. Add disclaimer: "Review before sending — TinyMuscle never auto-submits." |
+| contact_person | string | Show as mailto link if it contains @ |
+| analyzed_at | string | Show as "Analyzed X minutes ago" |
+
+---
 
 ## Tested Portals
 
 ```
-UN Global Marketplace   https://www.ungm.org/Public/Notice   15 tenders in ~1 min
-Kenya National Treasury https://www.treasury.go.ke/tenders   15 tenders in ~3 min
-Hacker News Jobs        https://news.ycombinator.com/jobs     10 items   in ~1 min
+UN Global Marketplace   https://www.ungm.org/Public/Notice        15 tenders  ~1 min
+Kenya National Treasury https://www.treasury.go.ke/tenders        15 tenders  ~3 min
+Hacker News Jobs        https://news.ycombinator.com/jobs          10 items    ~1 min
 ```
+
+---
 
 ## Project Structure
 
 ```
 tinymuscle/
-├── agent/       TinyFish SSE client, document fetcher, mock
-├── analyzer/    Gemini document intelligence + draft response
-├── api/         Chi router, REST handlers, SSE endpoint
-├── cmd/         Binary entrypoint, wiring, graceful shutdown
-├── extractor/   Shape-agnostic JSON → Tender normalizer
-├── matcher/     Gemini relevance scoring
-├── notifier/    Fan-out SSE broadcaster, drop semantics for slow clients
-├── portals/     Portal type definition
-├── scheduler/   Cron engine, immediate-fire on registration, crawl pipeline
-└── store/       BBolt, two-key deduplication, version tracking, analyses
+├── agent/                TinyFish SSE client, document fetcher, mock
+├── analyzer/             Gemini document intelligence + draft response
+├── api/                  Chi router, REST handlers, SSE endpoint
+├── cmd/                  Binary entrypoint, wiring, graceful shutdown
+├── extractor/            Shape-agnostic JSON → Tender normalizer
+├── matcher/              Gemini relevance scoring
+├── notifier/             Fan-out SSE broadcaster, drop semantics for slow clients
+├── portals/              Portal type definition
+├── scheduler/            Cron engine, immediate-fire on registration, crawl pipeline
+├── store/                BBolt, two-key deduplication, version tracking, analyses
+└── tenderwatch-frontend/ React dashboard
 ```
 
-## Dashboard Features
-
-The **TenderWatch** frontend is a modern React application with real-time updates:
-
-### Dashboard Home
-
-- **Live Statistics** - Total tenders, new opportunities, and updated tenders at a glance
-- **Real-time Notifications** - Toast alerts for new and updated tenders
-- **Live Feed Status** - Visual indicator showing connection status to the SSE event stream
-
-### Search & Filter
-
-- **Full-text Search** - Search by tender title, reference number, or issuing entity
-- **Status Filtering** - Filter by All / New / Updated tenders
-- **Live Mode Toggle** - Switch between viewing all tenders or just the latest 20
-
-### Portal Management
-
-- **Add Portals** - Register new procurement portals with a clean form interface
-- **AI Relevance Filtering** - (Optional) Configure business profile and relevance threshold
-- **Portal List** - View active portals with crawl intervals and filtering status
-- **Delete Portals** - Remove portals you no longer need
-
-### Tender Viewing
-
-- **Tender Cards** - Rich cards displaying:
-  - Title and Issuing Entity
-  - Deadline with visual warnings for approaching deadlines
-  - Estimated Value (if available)
-  - Relevance Score (if AI filtering enabled)
-  - Direct link to source
-  - Version and update timestamp
-- **Status Badges** - Visual indicators for new (🆕) and updated (📝) tenders
-
-### Front-End Tech Stack
-
-- **React 18** - Modern UI framework
-- **Vite** - Lightning-fast build tool
-- **Tailwind CSS** - Utility-first styling
-- **Lucide React** - Beautiful SVG icons
-- **react-hot-toast** - Non-intrusive notifications
-- **date-fns** - Date formatting and manipulation
-- **Axios** - HTTP client for API calls
-- **Server-Sent Events (SSE)** - Real-time bidirectional updates
+---
 
 ## Built for the TinyFish $2M Pre-Accelerator Hackathon 2026
+
