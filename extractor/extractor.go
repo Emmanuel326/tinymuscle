@@ -106,33 +106,30 @@ return nil, fmt.Errorf("no array found in TinyFish result")
 
 // parseDeadline attempts to parse a deadline string into a time.Time.
 func parseDeadline(s string) time.Time {
-s = strings.TrimSpace(s)
-if s == "" {
-return time.Time{}
-}
-
-formats := []string{
-"2006-01-02",
-"02/01/2006",
-"02-01-2006",
-"January 2, 2006",
-"2 January 2006",
-"02 Jan 2006",
-"Jan 02, 2006",
-}
-
-for _, f := range formats {
-if t, err := time.Parse(f, s); err == nil {
-return t
-}
-}
-
-return time.Time{}
-}
-
-func min(a, b int) int {
-if a < b {
-return a
-}
-return b
+    s = strings.TrimSpace(s)
+    if s == "" {
+        return time.Time{}
+    }
+    // strip timezone and time component — keep date only
+    if idx := strings.Index(s, " "); idx != -1 {
+        s = s[:idx]
+    }
+    // now s is something like "21-Mar-2026" or "2026-03-21"
+    formats := []string{
+        "2006-01-02",
+        "02/01/2006",
+        "02-01-2006",
+        "02-Jan-2006",
+        "January 2, 2006",
+        "2 January 2006",
+        "02 Jan 2006",
+        "Jan 02, 2006",
+        "Mon,",
+    }
+    for _, f := range formats {
+        if t, err := time.Parse(f, s); err == nil {
+            return t
+        }
+    }
+    return time.Time{}
 }
