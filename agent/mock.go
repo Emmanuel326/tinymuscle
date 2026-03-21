@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/Emmanuel326/tenderwatchafrica/portals"
+	"github.com/Emmanuel326/tinymuscle/portals"
 )
 
 // MockAgent simulates TinyFish responses for local development

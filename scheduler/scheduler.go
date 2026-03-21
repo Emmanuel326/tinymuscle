@@ -9,11 +9,12 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"github.com/Emmanuel326/tenderwatchafrica/agent"
-	"github.com/Emmanuel326/tenderwatchafrica/extractor"
-	"github.com/Emmanuel326/tenderwatchafrica/notifier"
-	"github.com/Emmanuel326/tenderwatchafrica/portals"
-	"github.com/Emmanuel326/tenderwatchafrica/store"
+	"github.com/Emmanuel326/tinymuscle/agent"
+	"github.com/Emmanuel326/tinymuscle/extractor"
+	"github.com/Emmanuel326/tinymuscle/matcher"
+	"github.com/Emmanuel326/tinymuscle/notifier"
+	"github.com/Emmanuel326/tinymuscle/portals"
+	"github.com/Emmanuel326/tinymuscle/store"
 )
 
 // Runner is the interface both Agent and MockAgent satisfy
@@ -27,6 +28,7 @@ type Scheduler struct {
 	runner   Runner
 	store    *store.Store
 	notifier *notifier.Notifier
+	matcher  *matcher.Matcher
 	mu       sync.Mutex
 	jobs     map[string]cron.EntryID
 }
@@ -36,18 +38,19 @@ func New(
 	r Runner,
 	s *store.Store,
 	n *notifier.Notifier,
+	m *matcher.Matcher,
 ) *Scheduler {
 	return &Scheduler{
 		cron:     cron.New(),
 		runner:   r,
 		store:    s,
 		notifier: n,
+		matcher:  m,
 		jobs:     make(map[string]cron.EntryID),
 	}
 }
 
-// Start begins the cron engine and rehydrates
-// all portals already stored in BBolt
+// Start begins the cron engine and rehydrates portals from BBolt
 func (s *Scheduler) Start() error {
 	portalsRaw, err := s.store.GetAllPortals()
 	if err != nil {
@@ -74,7 +77,9 @@ func (s *Scheduler) Stop() {
 	s.cron.Stop()
 }
 
-// Register adds a new portal to the cron engine
+// Register adds a new portal to the cron engine.
+// It also fires an immediate crawl in a goroutine so
+// the first result appears without waiting for the first tick.
 func (s *Scheduler) Register(p portals.Portal) error {
 	spec := fmt.Sprintf("@every %dm", p.IntervalMin)
 
@@ -93,6 +98,10 @@ func (s *Scheduler) Register(p portals.Portal) error {
 	}
 
 	s.jobs[p.ID] = id
+
+	// fire immediately on registration
+	go s.crawl(p)
+
 	return nil
 }
 
@@ -107,7 +116,8 @@ func (s *Scheduler) Deregister(portalID string) {
 	}
 }
 
-// crawl is the full pipeline for a single portal
+// crawl is the full pipeline for a single portal:
+// Agent → Extractor → Matcher → Store → Notifier
 func (s *Scheduler) crawl(p portals.Portal) {
 	log.Printf("[%s] crawl started", p.ID)
 
@@ -115,7 +125,11 @@ func (s *Scheduler) crawl(p portals.Portal) {
 	defer cancel()
 
 	result := s.runner.Run(ctx, p, func(event agent.SSEEvent) {
-		log.Printf("[%s] sse event: %s", p.ID, event.Type)
+		if event.Type == "STREAMING_URL" {
+			log.Printf("[%s] live browser: %s", p.ID, event.Result)
+		} else {
+			log.Printf("[%s] sse event: %s", p.ID, event.Type)
+		}
 	})
 
 	if result.Err != nil {
@@ -131,6 +145,25 @@ func (s *Scheduler) crawl(p portals.Portal) {
 
 	log.Printf("[%s] extracted %d tenders", p.ID, len(tenders))
 
+	// run AI matcher if business profile is set
+	if s.matcher != nil && p.BusinessProfile != "" {
+		threshold := p.RelevanceThreshold
+		if threshold == 0 {
+			threshold = 60
+		}
+
+		scored, err := s.matcher.Score(ctx, p.BusinessProfile, tenders, threshold)
+		if err != nil {
+			log.Printf("[%s] matcher failed: %v — using all tenders", p.ID, err)
+		} else {
+			log.Printf("[%s] matcher kept %d/%d relevant tenders", p.ID, len(scored), len(tenders))
+			tenders = make([]store.Tender, len(scored))
+			for i, sc := range scored {
+				tenders[i] = sc.Tender
+			}
+		}
+	}
+
 	events, err := s.store.UpsertTenders(tenders)
 	if err != nil {
 		log.Printf("[%s] upsert failed: %v", p.ID, err)
@@ -138,6 +171,5 @@ func (s *Scheduler) crawl(p portals.Portal) {
 	}
 
 	log.Printf("[%s] %d new/updated tenders", p.ID, len(events))
-
 	s.notifier.Broadcast(events)
 }

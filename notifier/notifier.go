@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 
-	"github.com/Emmanuel326/tenderwatchafrica/store"
+	"github.com/Emmanuel326/tinymuscle/store"
 )
 
 // Event is what gets pushed to connected clients

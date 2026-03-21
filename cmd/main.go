@@ -9,27 +9,27 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Emmanuel326/tenderwatchafrica/agent"
-	"github.com/Emmanuel326/tenderwatchafrica/api"
-	"github.com/Emmanuel326/tenderwatchafrica/notifier"
-	"github.com/Emmanuel326/tenderwatchafrica/scheduler"
-	"github.com/Emmanuel326/tenderwatchafrica/store"
+	"github.com/Emmanuel326/tinymuscle/agent"
+	"github.com/Emmanuel326/tinymuscle/api"
+	"github.com/Emmanuel326/tinymuscle/matcher"
+	"github.com/Emmanuel326/tinymuscle/notifier"
+	"github.com/Emmanuel326/tinymuscle/scheduler"
+	"github.com/Emmanuel326/tinymuscle/store"
 )
 
 func main() {
 	apiKey := os.Getenv("TINYFISH_API_KEY")
 	useMock := os.Getenv("USE_MOCK") == "true"
+	geminiKey := os.Getenv("GEMINI_API_KEY")
+	dbPath := os.Getenv("DB_PATH")
+	addr := os.Getenv("ADDR")
 
 	if !useMock && apiKey == "" {
 		log.Fatal("TINYFISH_API_KEY is required unless USE_MOCK=true")
 	}
-
-	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
-		dbPath = "tenderwatch.db"
+		dbPath = "tinymuscle.db"
 	}
-
-	addr := os.Getenv("ADDR")
 	if addr == "" {
 		addr = ":8080"
 	}
@@ -44,13 +44,25 @@ func main() {
 	// notifier
 	n := notifier.New()
 
-	// scheduler — accepts either real or mock agent
+	// matcher — optional, only if GEMINI_API_KEY is set
+	var m *matcher.Matcher
+	if geminiKey != "" {
+		m, err = matcher.New(geminiKey)
+		if err != nil {
+			log.Fatalf("matcher: %v", err)
+		}
+		log.Println("AI matcher enabled")
+	} else {
+		log.Println("AI matcher disabled — set GEMINI_API_KEY to enable")
+	}
+
+	// scheduler
 	var sc *scheduler.Scheduler
 	if useMock {
 		log.Println("running with mock agent")
-		sc = scheduler.New(agent.NewMock(), s, n)
+		sc = scheduler.New(agent.NewMock(), s, n, m)
 	} else {
-		sc = scheduler.New(agent.New(apiKey), s, n)
+		sc = scheduler.New(agent.New(apiKey), s, n, m)
 	}
 
 	if err := sc.Start(); err != nil {

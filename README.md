@@ -1,178 +1,279 @@
-# TenderWatchAfrica
+# TinyMuscle
 
-An AI agent that hunts government tenders and contracts across African procurement portals — so businesses never miss an opportunity because some broken government website didn't load that day.
+TinyMuscle is a stateful web intelligence pipeline that turns any structured
+page on the live internet into a monitored, deduplicated, queryable feed —
+with no brittle CSS selectors, no headless Chrome configuration, and no
+per-site maintenance burden.
 
-Powered by [TinyFish](https://www.tinyfish.ai).
+It was built for African government procurement portals: sites running
+decade-old PHP, behind Cloudflare, with inconsistent pagination, broken SSL,
+and no public API. If it works there, it works anywhere.
 
----
+## The Problem
 
-## 🚀 How It Works
+Government tenders, UN procurement notices, grant opportunities — the data
+exists. It is public. It is valuable. But it lives behind the worst UIs on
+the internet: JavaScript-rendered tables, multi-step pagination, session
+cookies, CAPTCHA walls, and PDF links three clicks deep. A Nairobi-based
+construction firm misses a KSh 50M contract not because they were
+unqualified but because the portal was down on the day it was posted and
+nobody checked again.
 
-1. You register a portal (URL + crawl goal) via the API  
-2. The scheduler sends a TinyFish agent to crawl it on your interval  
-3. The agent navigates the live web — pagination, JavaScript, anti-bot — and extracts tenders  
-4. New and updated tenders are stored, deduplicated, and streamed live to the dashboard  
+Traditional scrapers break the moment a developer renames a CSS class.
+Scheduled curl jobs get IP-banned. Manual monitoring does not scale past
+two or three portals.
 
----
+## The Architecture
 
-## 🧱 Stack
+TinyMuscle makes one architectural bet: delegate all browser complexity to
+TinyFish and own everything else.
 
-- **Go 1.26** — single binary, zero runtime dependencies  
-- **TinyFish Web Agent API** — browser automation and anti-bot  
-- **BBolt** — embedded key/value store, no database server needed  
-- **Chi** — lightweight HTTP router  
-- **Server-Sent Events (SSE)** — live tender feed to the frontend  
-
----
-
-## 🛠️ Running Locally
-
-```bash
-# clone
-git clone https://github.com/Emmanuel326/tenderwatchafrica
-cd tenderwatchafrica
-
-# configure
-cp .env.example .env
-# edit .env and set TINYFISH_API_KEY
-
-# build
-go build -o tenderwatchafrica ./cmd/main.go
-
-# run
-export $(cat .env | xargs) && ./tenderwatchafrica
+```
+TinyFish (browser agent)
+    ↓  SSE stream — partial results committed in real time
+Extractor (raw JSON → Tender structs)
+    ↓  shape-agnostic — handles flat arrays and nested objects
+Gemini Flash (relevance scoring against business profile)
+    ↓  single LLM call per batch — not per tender
+BBolt (two-key deduplication)
+    ↓  primary key: portalID + referenceNumber
+    ↓  version key: SHA256 of content fields
+SSE broadcast → Dashboard
 ```
 
----
+Each stage has one job. Nothing crosses boundaries. The scheduler does not
+know about HTTP. The extractor does not know about storage. The notifier
+does not know about portals. This is not accidental — it is the only way
+to keep a system like this maintainable as the number of portals grows.
 
-## 🔐 Environment Variables
+## The Deduplication Model
 
-| Variable           | Required | Default           | Description                          |
-|------------------|----------|------------------|--------------------------------------|
-| TINYFISH_API_KEY | yes*     | —                | TinyFish API key                     |
-| DB_PATH          | no       | tenderwatch.db   | BBolt database file path             |
-| ADDR             | no       | :8080            | HTTP server address                  |
-| USE_MOCK         | no       | false            | Use mock agent for local dev         |
+Most web intelligence tools key by URL or by a hash of the entire document.
+Both are wrong.
 
-\* Not required when `USE_MOCK=true`
+Keying by URL breaks when a portal repaginates. Keying by full document hash
+produces false positives when a timestamp in the page footer changes. Neither
+tells you what changed or why it matters.
 
----
+TinyMuscle uses a two-key model:
 
-## 📡 API Reference
+- **Primary key**: `portalID:referenceNumber` — stable identity derived from
+  the source document's own reference system.
+- **Version key**: SHA256 of title + issuing entity + deadline + estimated
+  value. Only fields that matter to a bidder contribute to the hash.
 
-### 📂 Portals
+On every crawl, three outcomes are possible:
 
-| Method | Endpoint      | Description           |
-|--------|--------------|-----------------------|
-| POST   | /portals     | Register a new portal |
-| GET    | /portals     | List all portals      |
-| DELETE | /portals/:id | Remove a portal       |
+1. Key missing → `status: new` → alert fired
+2. Key present, hash unchanged → silent, no write
+3. Key present, hash changed → `status: updated`, version incremented → alert fired
 
-#### Example Request (POST /portals)
+An addendum that extends a deadline is an update, not a new tender. A
+re-crawl of an unchanged page produces zero writes.
+
+## The Agent Model
+
+TinyMuscle does not scrape. It issues goals.
+
+Each portal registration includes a natural language goal:
 
 ```json
 {
-  "id": "ppra_ke",
-  "name": "PPRA Kenya",
-  "url": "https://www.ppra.go.ke",
-  "goal": "Navigate to the tenders section, paginate through all pages, extract all open tenders as JSON array with fields: title, reference_number, issuing_entity, deadline, estimated_value, source_url",
-  "interval_min": 60,
-  "headers": {},
-  "cookies": {}
+  "goal": "Navigate to the procurement notices page, extract all visible open tenders. For each tender extract: title, reference_number, issuing_entity, deadline, estimated_value, source_url. Return as JSON array."
 }
 ```
 
----
+TinyFish receives this goal and executes a stateful browser session:
+JavaScript rendering, pagination clicks, Cloudflare bypass, session
+management. It streams results back via SSE. TinyMuscle commits partial
+results to BBolt as the stream arrives — a connection drop halfway through
+a 200-tender paginated portal loses nothing already extracted.
 
-### 📑 Tenders
+## The Relevance Model
 
-| Method | Endpoint            | Description                    |
-|--------|--------------------|--------------------------------|
-| GET    | /tenders           | All tenders across all portals |
-| GET    | /tenders/:portalID | Tenders for a specific portal  |
+Raw extraction produces signal and noise in equal measure. A procurement
+portal lists everything: office furniture, road construction, ICT
+infrastructure, consultancy services. An ICT firm does not need to know
+about the furniture tender.
 
-#### Tender Object
+When a portal is registered with a `business_profile`, every extracted
+tender batch is scored by Gemini Flash against that profile in a single
+API call. Only tenders above `relevance_threshold` (default: 60/100) are
+stored and surfaced. When no `business_profile` is provided, all tenders
+are kept. The system degrades gracefully rather than failing.
+
+## Tradeoffs
+
+**BBolt over Postgres.** BBolt is an embedded key-value store. It requires
+no server, no connection pool, no migrations. The entire database is a
+single file. For a pipeline that writes in batches and reads on API
+requests, BBolt's sequential write performance is more than adequate.
+The tradeoff is no SQL — but the query patterns here do not need it.
+
+**Single binary.** There is no separate scheduler process, no message
+queue, no worker pool. The scheduler, API server, and crawl pipeline run
+in the same process. A single `./tinymuscle` starts everything. A single
+SIGTERM stops it cleanly.
+
+**SSE over WebSockets.** The dashboard receives tender events over
+Server-Sent Events, not WebSockets. SSE is unidirectional, HTTP/1.1
+compatible, and trivially reconnectable. The dashboard does not send data
+to the server over the event channel — it has the REST API for that.
+
+**Goal-based extraction over CSS selectors.** The extractor has no
+knowledge of any specific portal's HTML structure. When a portal redesigns
+its UI, nothing in TinyMuscle breaks. The tradeoff is dependency on
+TinyFish's interpretation accuracy — a better failure mode than maintaining
+hundreds of brittle selectors.
+
+## What This Is Good At
+
+- Portals with aggressive anti-bot measures
+- Sites that require multi-step navigation to reach listings
+- Paginated results across an unknown number of pages
+- Any situation where the cost of a missed opportunity exceeds the cost of running the pipeline
+
+## What This Is Not Good At
+
+- Real-time data with sub-minute latency — TinyFish sessions take 1-3 minutes per portal
+- Portals requiring authenticated sessions with MFA
+- Extracting data from PDFs linked within tender listings
+
+## Running
+
+```bash
+git clone https://github.com/Emmanuel326/tinymuscle
+cd tinymuscle
+cp .env.example .env
+# set TINYFISH_API_KEY and optionally GEMINI_API_KEY
+go build -o tinymuscle ./cmd/main.go
+export $(cat .env | xargs) && ./tinymuscle
+```
+
+## Environment Variables
+
+```
+TINYFISH_API_KEY   required*   TinyFish Web Agent API key
+GEMINI_API_KEY     optional    Gemini API key for relevance scoring
+DB_PATH            optional    BBolt database path (default: tinymuscle.db)
+ADDR               optional    HTTP listen address (default: :8080)
+USE_MOCK           optional    Set to true to bypass TinyFish for local dev
+```
+
+*not required when USE_MOCK=true
+
+## API
+
+### Register a portal
+
+```bash
+curl -s -X POST http://localhost:8080/portals \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "ungm",
+    "name": "UN Global Marketplace",
+    "url": "https://www.ungm.org/Public/Notice",
+    "goal": "Navigate to the procurement notices page, extract all visible open tenders. For each tender extract: title, reference_number, issuing_entity, deadline, estimated_value, source_url. Return as JSON array.",
+    "interval_min": 60,
+    "business_profile": "We are a Nairobi-based ICT firm specialising in network infrastructure and government systems integration",
+    "relevance_threshold": 60
+  }'
+```
+
+### Register a portal (mock mode — no business profile, no AI filtering)
+
+```bash
+curl -s -X POST http://localhost:8080/portals \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "ungm",
+    "name": "UN Global Marketplace",
+    "url": "https://www.ungm.org/Public/Notice",
+    "goal": "Navigate to the procurement notices page, extract all visible open tenders. For each tender extract: title, reference_number, issuing_entity, deadline, estimated_value, source_url. Return as JSON array.",
+    "interval_min": 60
+  }'
+```
+
+### List all portals
+
+```bash
+curl -s http://localhost:8080/portals
+```
+
+### Delete a portal
+
+```bash
+curl -s -X DELETE http://localhost:8080/portals/ungm
+```
+
+### List all tenders
+
+```bash
+curl -s http://localhost:8080/tenders | python3 -m json.tool
+```
+
+### List tenders by portal
+
+```bash
+curl -s http://localhost:8080/tenders/ungm | python3 -m json.tool
+```
+
+### Connect to the live event stream
+
+```bash
+curl -s http://localhost:8080/events
+```
+
+Events arrive as:
+
+```json
+{"type":"new","tender":{...}}
+{"type":"updated","tender":{...}}
+```
+
+A heartbeat comment is sent every 30 seconds to survive proxy timeouts.
+
+## Tender Object
 
 ```json
 {
-  "reference_number": "PPRA/001/2026",
-  "portal_id": "ppra_ke",
-  "title": "Supply of Office Furniture",
-  "issuing_entity": "Ministry of Public Service",
-  "deadline": "2026-04-03T00:00:00Z",
-  "estimated_value": "KES 2,500,000",
-  "source_url": "https://www.ppra.go.ke/tenders/001",
+  "reference_number": "UNDP-LBR-00870",
+  "portal_id": "ungm",
+  "title": "Procurement of server and UPS for PPCC Liberia",
+  "issuing_entity": "UNDP",
+  "deadline": "2026-03-21T10:00:00Z",
+  "estimated_value": "",
+  "source_url": "https://www.ungm.org/Public/Notice/293698",
   "content_hash": "0cf3bb44...",
   "version": 1,
-  "last_updated": "2026-03-20T23:46:39Z",
+  "last_updated": "2026-03-21T04:57:45Z",
   "status": "new"
 }
 ```
 
----
+Status values: `new` | `updated`
 
-## 🔴 Live Events (SSE)
-
-**Endpoint:** `GET /events`
-
-- Connect once and receive a live stream of tender events  
-- Heartbeat sent every 30 seconds  
-
-#### Event Example
-
-```json
-{
-  "type": "new",
-  "tender": { ...tender object }
-}
-```
-
-#### Event Types
-
-- `new` — First time seen  
-- `updated` — Content changed  
-- `closed` — Past deadline  
-
----
-
-## 📊 Tender Status
-
-| Status  | Meaning                           |
-|--------|-----------------------------------|
-| new    | First time this tender is seen     |
-| updated| Tender exists but content changed |
-| closed | Tender past deadline              |
-
----
-
-## 🌍 Demo Portals
-
-| Portal                    | ID              | Interval |
-|--------------------------|-----------------|----------|
-| PPRA Kenya               | ppra_ke         | 60 min   |
-| KeNHA                    | kenha           | 60 min   |
-| Nairobi City County      | nairobi_county  | 120 min  |
-| African Development Bank | afdb            | 120 min  |
-| UN Kenya                 | un_kenya        | 120 min  |
-
----
-
-## 🗂️ Project Structure
+## Tested Portals
 
 ```
-tenderwatchafrica/
-├── agent/        # TinyFish SSE client + mock
-├── api/          # Chi HTTP server + SSE endpoint
-├── cmd/          # Binary entrypoint
-├── extractor/    # Raw JSON → Tender structs
-├── notifier/     # Fan-out SSE broadcaster
-├── portals/      # Portal data type
-├── scheduler/    # Cron engine + crawl pipeline
-└── store/        # BBolt persistence + deduplication
+UN Global Marketplace   https://www.ungm.org/Public/Notice   15 tenders in ~1 min
+Kenya National Treasury https://www.treasury.go.ke/tenders   15 tenders in ~3 min
+Hacker News Jobs        https://news.ycombinator.com/jobs     10 items   in ~1 min
 ```
 
----
+## Project Structure
 
-## 🏁 Hackathon
+```
+tinymuscle/
+├── agent/       TinyFish SSE client + mock
+├── api/         Chi router, REST handlers, SSE endpoint
+├── cmd/         Binary entrypoint, wiring, graceful shutdown
+├── extractor/   Shape-agnostic JSON → Tender normalizer
+├── matcher/     Gemini relevance scoring
+├── notifier/    Fan-out SSE broadcaster, drop semantics for slow clients
+├── portals/     Portal type definition
+├── scheduler/   Cron engine, immediate-fire on registration, crawl pipeline
+└── store/       BBolt, two-key deduplication, version tracking
+```
 
-Built for **TinyFish $2M Pre-Accelerator Hackathon 2026**
+## Built for the TinyFish $2M Pre-Accelerator Hackathon 2026

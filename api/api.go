@@ -9,10 +9,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/Emmanuel326/tenderwatchafrica/notifier"
-	"github.com/Emmanuel326/tenderwatchafrica/portals"
-	"github.com/Emmanuel326/tenderwatchafrica/scheduler"
-	"github.com/Emmanuel326/tenderwatchafrica/store"
+	"github.com/Emmanuel326/tinymuscle/notifier"
+	"github.com/Emmanuel326/tinymuscle/portals"
+	"github.com/Emmanuel326/tinymuscle/scheduler"
+	"github.com/Emmanuel326/tinymuscle/store"
 )
 
 // Server holds all dependencies

@@ -1,0 +1,180 @@
+package agent
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/Emmanuel326/tenderwatchafrica/portals"
+)
+
+const (
+	endpoint       = "https://agent.tinyfish.ai/v1/automation/run-sse"
+	requestTimeout = 10 * time.Minute
+	CrawlTimeout   = requestTimeout
+)
+
+// SSEEvent represents a single event from the TinyFish SSE stream
+type SSEEvent struct {
+	Type   string          `json:"type"`
+	Status string          `json:"status"`
+	Result json.RawMessage `json:"resultJson,omitempty"`
+	Error  string          `json:"error,omitempty"`
+}
+
+// RunRequest is the payload sent to TinyFish
+type RunRequest struct {
+	URL            string `json:"url"`
+	Goal           string `json:"goal"`
+	BrowserProfile string `json:"browser_profile,omitempty"`
+}
+
+// Agent is the TinyFish SSE client
+type Agent struct {
+	apiKey     string
+	httpClient *http.Client
+}
+
+// New creates a new Agent
+func New(apiKey string) *Agent {
+	return &Agent{
+		apiKey: apiKey,
+		httpClient: &http.Client{
+			Timeout: requestTimeout,
+		},
+	}
+}
+
+// Result is what the Agent hands back to the caller
+type Result struct {
+	PortalID string
+	Raw      json.RawMessage
+	Err      error
+}
+
+// Run executes a stateful multi-step crawl against a portal
+func (a *Agent) Run(
+	ctx context.Context,
+	portal portals.Portal,
+	onEvent func(SSEEvent),
+) Result {
+	payload := RunRequest{
+		URL:            portal.URL,
+		Goal:           portal.Goal,
+		BrowserProfile: "lite",
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return Result{PortalID: portal.ID, Err: fmt.Errorf("marshal: %w", err)}
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		endpoint,
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return Result{PortalID: portal.ID, Err: fmt.Errorf("request: %w", err)}
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", a.apiKey)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Connection", "keep-alive")
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return Result{PortalID: portal.ID, Err: fmt.Errorf("http: %w", err)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// read body for more detail on the error
+		errBody, _ := io.ReadAll(resp.Body)
+		return Result{
+			PortalID: portal.ID,
+			Err:      fmt.Errorf("unexpected status: %d — %s", resp.StatusCode, string(errBody)),
+		}
+	}
+
+	return a.consumeStream(ctx, portal.ID, resp.Body, onEvent)
+}
+
+// consumeStream reads the SSE stream line by line
+func (a *Agent) consumeStream(
+	ctx context.Context,
+	portalID string,
+	body io.Reader,
+	onEvent func(SSEEvent),
+) Result {
+	scanner := bufio.NewScanner(body)
+
+	var dataBuffer strings.Builder
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return Result{PortalID: portalID, Err: ctx.Err()}
+		default:
+		}
+
+		line := scanner.Text()
+
+		switch {
+		case strings.HasPrefix(line, "data:"):
+			data := strings.TrimPrefix(line, "data:")
+			data = strings.TrimSpace(data)
+			dataBuffer.WriteString(data)
+
+		case line == "":
+			raw := dataBuffer.String()
+			dataBuffer.Reset()
+
+			if raw == "" {
+				continue
+			}
+
+			var event SSEEvent
+			if err := json.Unmarshal([]byte(raw), &event); err != nil {
+				continue
+			}
+
+			if onEvent != nil {
+				onEvent(event)
+			}
+
+			if event.Type == "COMPLETE" && event.Status == "COMPLETED" {
+                                log.Printf("COMPLETE event raw: %s", raw)
+				return Result{
+					PortalID: portalID,
+					Raw:      event.Result,
+				}
+			}
+
+			if event.Type == "ERROR" || event.Status == "FAILED" {
+				return Result{
+					PortalID: portalID,
+					Err:      fmt.Errorf("tinyfish error: %s", event.Error),
+				}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return Result{PortalID: portalID, Err: fmt.Errorf("scanner: %w", err)}
+	}
+
+	return Result{
+		PortalID: portalID,
+		Err:      fmt.Errorf("stream ended without COMPLETE event"),
+	}
+}
