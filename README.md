@@ -23,6 +23,14 @@ Traditional scrapers break the moment a developer renames a CSS class.
 Scheduled curl jobs get IP-banned. Manual monitoring does not scale past
 two or three portals.
 
+## Features
+
+-**AI-Powered Extraction** - Natural language goals, not brittle CSS selectors -**Smart Relevance Filtering** - Gemini AI scores tenders against your business profile -**Intelligent Deduplication** - Two-key model detects real changes, ignores noise -**Real-time Updates** - SSE streams tenders live to your dashboard -**Zero Configuration Database** - Embedded BBolt, no separate database server
+
+- **Single Binary** - Everything in one executable, easy deployment
+- **Modern Dashboard** - Beautiful React frontend with real-time updates
+- **Live Web Agents** - TinyFish handles JavaScript, pagination, anti-bot measures
+
 ## The Architecture
 
 TinyMuscle makes one architectural bet: delegate all browser complexity to
@@ -139,32 +147,68 @@ hundreds of brittle selectors.
 - Portals requiring authenticated sessions with MFA
 - Extracting data from PDFs linked within tender listings
 
-## Running
+## Quick Start
+
+### Prerequisites
+
+- **Go 1.25+** - [Download](https://golang.org/dl/)
+- **Node.js 18+** - [Download](https://nodejs.org/)
+- **TinyFish API Key** - Get one at [tinyfish.io](https://tinyfish.io) (required for live agents)
+- **Gemini API Key** - Get one at [makersuite.google.com/app/apikey](https://makersuite.google.com/app/apikey) (optional, for AI relevance scoring)
+
+### Installation
 
 ```bash
+# Clone the repository
 git clone https://github.com/Emmanuel326/tinymuscle
 cd tinymuscle
+
+# Configure environment
 cp .env.example .env
-# set TINYFISH_API_KEY and optionally GEMINI_API_KEY
+# Edit .env and add your API keys
+
+# Build the backend
 go build -o tinymuscle ./cmd/main.go
-export $(cat .env | xargs) && ./tinymuscle
+
+# Install frontend dependencies
+cd tenderwatch-frontend
+npm install
+
+# Return to project root
+cd ..
 ```
 
-## Environment Variables
+### Environment Variables
 
+```bash
+TINYFISH_API_KEY=required       # TinyFish Web Agent API key
+GEMINI_API_KEY=optional         # Gemini API key for relevance scoring
+DB_PATH=tinymuscle.db           # BBolt database path
+ADDR=:8080                      # HTTP listen address
+USE_MOCK=false                  # Set to true to bypass TinyFish for local dev
 ```
-TINYFISH_API_KEY   required*   TinyFish Web Agent API key
-GEMINI_API_KEY     optional    Gemini API key for relevance scoring
-DB_PATH            optional    BBolt database path (default: tinymuscle.db)
-ADDR               optional    HTTP listen address (default: :8080)
-USE_MOCK           optional    Set to true to bypass TinyFish for local dev
+
+**Note:** `TINYFISH_API_KEY` is not required when `USE_MOCK=true`
+
+### Running the Application
+
+```bash
+# Terminal 1: Start the backend
+export $(cat .env | xargs)
+./tinymuscle
+
+# Terminal 2: Start the frontend development server
+cd tenderwatch-frontend
+npm run dev
 ```
 
-*not required when USE_MOCK=true
+Access the dashboard at `http://localhost:5173`
 
-## API
+## API Reference
 
-### Register a portal
+### Register a Portal
+
+Enable AI relevance scoring by providing a business profile:
 
 ```bash
 curl -s -X POST http://localhost:8080/portals \
@@ -180,7 +224,7 @@ curl -s -X POST http://localhost:8080/portals \
   }'
 ```
 
-### Register a portal (mock mode — no business profile, no AI filtering)
+### Register a Portal Without AI Filtering
 
 ```bash
 curl -s -X POST http://localhost:8080/portals \
@@ -194,31 +238,31 @@ curl -s -X POST http://localhost:8080/portals \
   }'
 ```
 
-### List all portals
+### List All Portals
 
 ```bash
 curl -s http://localhost:8080/portals
 ```
 
-### Delete a portal
+### Delete a Portal
 
 ```bash
 curl -s -X DELETE http://localhost:8080/portals/ungm
 ```
 
-### List all tenders
+### List All Tenders
 
 ```bash
 curl -s http://localhost:8080/tenders | python3 -m json.tool
 ```
 
-### List tenders by portal
+### List Tenders by Portal
 
 ```bash
 curl -s http://localhost:8080/tenders/ungm | python3 -m json.tool
 ```
 
-### Connect to the live event stream
+### Subscribe to Live Events (Server-Sent Events)
 
 ```bash
 curl -s http://localhost:8080/events
@@ -265,15 +309,192 @@ Hacker News Jobs        https://news.ycombinator.com/jobs     10 items   in ~1 m
 
 ```
 tinymuscle/
-├── agent/       TinyFish SSE client + mock
-├── api/         Chi router, REST handlers, SSE endpoint
-├── cmd/         Binary entrypoint, wiring, graceful shutdown
-├── extractor/   Shape-agnostic JSON → Tender normalizer
-├── matcher/     Gemini relevance scoring
-├── notifier/    Fan-out SSE broadcaster, drop semantics for slow clients
-├── portals/     Portal type definition
-├── scheduler/   Cron engine, immediate-fire on registration, crawl pipeline
-└── store/       BBolt, two-key deduplication, version tracking
+├── agent/                   # TinyFish SSE client + mock
+│   ├── agent.go            # Real TinyFish agent
+│   └── mock.go             # Mock agent for testing
+├── api/                     # Chi router, REST handlers
+│   └── api.go              # Server setup
+├── cmd/                     # Binary entrypoint
+│   └── main.go             # App wiring, graceful shutdown
+├── extractor/               # Shape-agnostic JSON → Tender
+│   └── extractor.go        # Field mapping & validation
+├── matcher/                 # Gemini relevance scoring
+│   └── matcher.go          # AI scoring integration
+├── notifier/                # Fan-out SSE broadcaster
+│   └── notifier.go         # Event distribution
+├── portals/                 # Portal type definition
+│   └── portals.go          # Portal struct
+├── scheduler/               # Cron engine, crawl pipeline
+│   └── scheduler.go        # Scheduling & execution
+├── store/                   # BBolt, two-key deduplication
+│   └── store.go            # Database operations
+├── tenderwatch-frontend/    # React + Vite dashboard
+│   ├── src/
+│   │   ├── components/     # TenderCard, PortalManager
+│   │   ├── hooks/          # useSSE for real-time events
+│   │   ├── services/       # API client
+│   │   ├── App.jsx         # Main dashboard
+│   │   ├── main.jsx        # Entry point
+│   │   ├── index.css       # Tailwind styles
+│   │   └── assets/         # Static files
+│   ├── package.json        # Frontend dependencies
+│   ├── tailwind.config.js  # Tailwind CSS config
+│   ├── vite.config.js      # Vite build config
+│   └── index.html          # HTML template
+├── .env.example             # Environment template
+├── go.mod                   # Go dependencies
+├── go.sum                   # Go checksums
+├── add_test_data.go         # Utility to seed test data
+└── README.md                # This file
 ```
 
+## Dashboard Features
+
+The **TenderWatch** frontend is a modern React application with real-time updates:
+
+### Dashboard Home
+
+- **Live Statistics** - Total tenders, new opportunities, and updated tenders at a glance
+- **Real-time Notifications** - Toast alerts for new and updated tenders
+- **Live Feed Status** - Visual indicator showing connection status to the SSE event stream
+
+### Search & Filter
+
+- **Full-text Search** - Search by tender title, reference number, or issuing entity
+- **Status Filtering** - Filter by All / New / Updated tenders
+- **Live Mode Toggle** - Switch between viewing all tenders or just the latest 20
+
+### Portal Management
+
+- **Add Portals** - Register new procurement portals with a clean form interface
+- **AI Relevance Filtering** - (Optional) Configure business profile and relevance threshold
+- **Portal List** - View active portals with crawl intervals and filtering status
+- **Delete Portals** - Remove portals you no longer need
+
+### Tender Viewing
+
+- **Tender Cards** - Rich cards displaying:
+  - Title and Issuing Entity
+  - Deadline with visual warnings for approaching deadlines
+  - Estimated Value (if available)
+  - Relevance Score (if AI filtering enabled)
+  - Direct link to source
+  - Version and update timestamp
+- **Status Badges** - Visual indicators for new (🆕) and updated (📝) tenders
+
+### Front-End Tech Stack
+
+- **React 18** - Modern UI framework
+- **Vite** - Lightning-fast build tool
+- **Tailwind CSS** - Utility-first styling
+- **Lucide React** - Beautiful SVG icons
+- **react-hot-toast** - Non-intrusive notifications
+- **date-fns** - Date formatting and manipulation
+- **Axios** - HTTP client for API calls
+- **Server-Sent Events (SSE)** - Real-time bidirectional updates
+
 ## Built for the TinyFish $2M Pre-Accelerator Hackathon 2026
+
+## Development
+
+### Local Development with Mock Data
+
+To test without a TinyFish API key, use mock mode:
+
+```bash
+# Set USE_MOCK=true in your .env
+export USE_MOCK=true
+export $(cat .env | xargs)./tinymuscle
+```
+
+The mock agent returns sample tender data for testing portal registration and the dashboard.
+
+### Adding Test Data
+
+Add sample tenders to the database:
+
+```bash
+# Run the add_test_data script
+go run add_test_data.go
+```
+
+This populates the BBolt database with test portals and tenders for frontend development.
+
+### Frontend Development
+
+The frontend runs with hot module reloading (HMR):
+
+```bash
+cd tenderwatch-frontend
+npm run dev
+```
+
+Access the dashboard at `http://localhost:5173`. Changes to React components reload instantly.
+
+### Building for Production
+
+**Backend:**
+
+```bash
+go build -o tinymuscle ./cmd/main.go
+```
+
+## Troubleshooting
+
+### Backend Issues
+
+**"TINYFISH_API_KEY is required"**
+
+- Set `USE_MOCK=true` if you don't have a TinyFish key, or get one at [tinyfish.io](https://tinyfish.io)
+
+**"Failed to connect to event stream"**
+
+- Ensure the backend is running on port 8080
+- Check firewall rules are not blocking localhost connections
+- Verify `ADDR` environment variable is set correctly
+
+**"Database locked"**
+
+- BBolt can only have one writer at a time. Ensure only one instance of tinymuscle is running.
+- Check `DB_PATH` environment variable — multiple instances might be using different database files.
+
+### Frontend Issues
+
+**"Failed to load tenders" or "Disconnected" status**
+
+- Verify the backend is running: `curl http://localhost:8080/portals`
+- Check that `ADDR=:8080` matches the backend server address
+- If running on a different machine, update the API URL in `tenderwatch-frontend/src/services/api.js`
+
+**SSE connection keeps failing**
+
+- Check browser console for CORS errors
+- Verify backend is listening on 8080: `lsof -i :8080` or `netstat -an | grep 8080`
+- Ensure no firewall/proxy is blocking SSE connections
+
+**Node modules issues**
+
+- Clear and reinstall: `rm -rf node_modules package-lock.json && npm install`
+
+## Performance Notes
+
+- **Crawl Time**: TinyFish sessions typically take 1-3 minutes per portal depending on site complexity
+- **Database** - BBolt is single-file and has no server overhead, but is optimized for batch writes and read-on-request patterns
+- **Relevance Scoring**: Gemini API calls are batched per crawl cycle, not per tender (single call for all new tenders)
+- **Memory**: Typical runtime uses <100MB for the backend with 10K+ tenders in the database
+
+## Contributing
+
+TinyMuscle is designed for extensibility:
+
+- **New Portals** - Register via API, no code changes needed
+- **Custom Extractors** - Modify `extractor/extractor.go` for new field patterns
+- **Custom Matchers** - Beyond Gemini, implement the `Matcher` interface in `matcher/matcher.go`
+- **Frontend Customization** - All React components in `tenderwatch-frontend/src/components/`
+
+## Support
+
+- **Issues & Features** - GitHub Issues
+- **Questions** - Start a Discussion
+- **TinyFish Docs** - [docs.tinyfish.io](https://docs.tinyfish.io)
+- **Gemini API Docs** - [ai.google.dev](https://ai.google.dev)
