@@ -32,6 +32,12 @@ export function PortalManager({ onPortalChange }) {
     fetchPortals();
   }, []);
   
+  // Auto-fill ID from name
+  const handleNameChange = (name) => {
+    const id = name.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    setFormData({ ...formData, name, id });
+  };
+  
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -103,19 +109,18 @@ export function PortalManager({ onPortalChange }) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <input
               type="text"
-              placeholder="Portal ID (e.g., ungm, ppra_ke)"
+              placeholder="Portal Name"
               className="px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500"
-              value={formData.id}
-              onChange={(e) => setFormData({...formData, id: e.target.value.toLowerCase().replace(/\s/g, '_')})}
+              value={formData.name}
+              onChange={(e) => handleNameChange(e.target.value)}
               required
             />
             <input
               type="text"
-              placeholder="Portal Name"
-              className="px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500"
-              value={formData.name}
-              onChange={(e) => setFormData({...formData, name: e.target.value})}
-              required
+              placeholder="Portal ID (auto-filled)"
+              className="px-3 py-2 border rounded-md bg-gray-100"
+              value={formData.id}
+              readOnly
             />
             <input
               type="url"
@@ -134,7 +139,7 @@ export function PortalManager({ onPortalChange }) {
               required
             />
             <textarea
-              placeholder="Crawl Goal"
+              placeholder="Crawl Goal - Natural language instructions for TinyFish"
               className="px-3 py-2 border rounded-md md:col-span-2 focus:ring-2 focus:ring-blue-500"
               rows="3"
               value={formData.goal}
@@ -204,7 +209,7 @@ export function PortalManager({ onPortalChange }) {
             <div className="flex justify-between items-start">
               <div className="flex-1">
                 <h3 className="font-semibold text-gray-900">{portal.name}</h3>
-                <p className="text-sm text-gray-600 mt-1">{portal.id}</p>
+                <p className="text-sm text-gray-600 mt-1 font-mono">{portal.id}</p>
                 <div className="flex items-center gap-2 mt-2">
                   <ZapIcon className="w-3 h-3 text-gray-400" />
                   <p className="text-xs text-gray-500">
@@ -222,7 +227,8 @@ export function PortalManager({ onPortalChange }) {
               </div>
               <button
                 onClick={() => handleDelete(portal.id)}
-                className="text-red-500 hover:text-red-700"
+                className="text-red-500 hover:text-red-700 p-1"
+                title="Delete portal"
               >
                 <TrashIcon className="w-4 h-4" />
               </button>
