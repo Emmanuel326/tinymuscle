@@ -4,13 +4,15 @@ import { TenderCard } from './components/TenderCard';
 import { PortalManager } from './components/PortalManager';
 import { useSSE } from './hooks/useSSE';
 import { api } from './services/api';
-import { Activity, Zap, Database, Target, AlertCircle, Loader2 } from 'lucide-react';
+import { Activity, Zap, Database, Target, AlertCircle, Filter } from 'lucide-react';
 
 function App() {
   const [tenders, setTenders] = useState([]);
   const [filteredTenders, setFilteredTenders] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [portalFilter, setPortalFilter] = useState('all');
+  const [portals, setPortals] = useState([]);
   const [stats, setStats] = useState({ total: 0, new: 0, updated: 0 });
   const [showLiveOnly, setShowLiveOnly] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -21,15 +23,17 @@ function App() {
     const fetchData = async () => {
       setLoading(true);
       try {
-        const [tendersData, statsData] = await Promise.all([
+        const [tendersData, portalsData] = await Promise.all([
           api.getTenders(),
-          api.getTenderStats()
+          api.getPortals()
         ]);
         setTenders(tendersData || []);
-        setStats(statsData || { total: 0, new: 0, updated: 0 });
+        setPortals(portalsData || []);
+        const statsData = await api.getTenderStats(tendersData);
+        setStats(statsData);
       } catch (error) {
         console.error('Error fetching data:', error);
-        toast.error('Failed to load tenders');
+        toast.error('Failed to load data');
       } finally {
         setLoading(false);
       }
@@ -53,12 +57,6 @@ function App() {
           });
           
           toast.success(`${event.type === 'new' ? '🆕 New' : '📝 Updated'} tender: ${event.tender.title}`);
-          
-          setStats(prev => ({
-            ...prev,
-            total: prev.total + (event.type === 'new' ? 1 : 0),
-            [event.type]: prev[event.type] + 1
-          }));
         }
       });
     }
@@ -66,6 +64,10 @@ function App() {
   
   useEffect(() => {
     let filtered = tenders || [];
+    
+    if (portalFilter !== 'all') {
+      filtered = filtered.filter(t => t?.portal_id === portalFilter);
+    }
     
     if (statusFilter !== 'all') {
       filtered = filtered.filter(t => t?.status === statusFilter);
@@ -84,13 +86,21 @@ function App() {
     }
     
     setFilteredTenders(filtered);
-  }, [tenders, statusFilter, searchTerm, showLiveOnly]);
+    
+    // Update stats
+    const newStats = {
+      total: tenders.length,
+      new: tenders.filter(t => t?.status === 'new').length,
+      updated: tenders.filter(t => t?.status === 'updated').length
+    };
+    setStats(newStats);
+  }, [tenders, statusFilter, searchTerm, portalFilter, showLiveOnly]);
   
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
-          <Loader2 className="w-12 h-12 text-blue-600 animate-spin mx-auto mb-4" />
+          <Zap className="w-12 h-12 text-blue-600 animate-pulse mx-auto mb-4" />
           <p className="text-gray-600">Loading TinyMuscle...</p>
         </div>
       </div>
@@ -127,12 +137,13 @@ function App() {
       </header>
       
       <main className="container mx-auto px-4 py-8">
+        {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
           <div className="bg-white rounded-lg shadow p-6">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-gray-500 text-sm">Total Tenders</p>
-                <p className="text-2xl font-bold text-gray-900">{stats.total || 0}</p>
+                <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
               </div>
               <Database className="w-8 h-8 text-blue-500" />
             </div>
@@ -141,7 +152,7 @@ function App() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-gray-500 text-sm">New Opportunities</p>
-                <p className="text-2xl font-bold text-green-600">{stats.new || 0}</p>
+                <p className="text-2xl font-bold text-green-600">{stats.new}</p>
               </div>
               <Zap className="w-8 h-8 text-green-500" />
             </div>
@@ -150,33 +161,47 @@ function App() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-gray-500 text-sm">Updated Tenders</p>
-                <p className="text-2xl font-bold text-yellow-600">{stats.updated || 0}</p>
+                <p className="text-2xl font-bold text-yellow-600">{stats.updated}</p>
               </div>
               <Target className="w-8 h-8 text-yellow-500" />
             </div>
           </div>
         </div>
         
+        {/* Filters */}
         <div className="bg-white rounded-lg shadow p-4 mb-6">
           <div className="flex flex-wrap gap-4 items-center justify-between">
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
+              {/* Portal Filter */}
+              <select
+                value={portalFilter}
+                onChange={(e) => setPortalFilter(e.target.value)}
+                className="px-3 py-2 border rounded-md bg-white"
+              >
+                <option value="all">All Portals</option>
+                {portals.map(portal => (
+                  <option key={portal.id} value={portal.id}>{portal.name}</option>
+                ))}
+              </select>
+              
+              {/* Status Filters */}
               <button
                 onClick={() => setStatusFilter('all')}
                 className={`px-4 py-2 rounded-md transition-colors ${statusFilter === 'all' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
               >
-                All
+                All Status
               </button>
               <button
                 onClick={() => setStatusFilter('new')}
                 className={`px-4 py-2 rounded-md transition-colors ${statusFilter === 'new' ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
               >
-                New
+                New Only
               </button>
               <button
                 onClick={() => setStatusFilter('updated')}
                 className={`px-4 py-2 rounded-md transition-colors ${statusFilter === 'updated' ? 'bg-yellow-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
               >
-                Updated
+                Updated Only
               </button>
             </div>
             
@@ -184,7 +209,7 @@ function App() {
               <input
                 type="text"
                 placeholder="Search tenders..."
-                className="px-4 py-2 border rounded-md w-64 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="px-4 py-2 border rounded-md w-64 focus:ring-2 focus:ring-blue-500"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
@@ -198,12 +223,14 @@ function App() {
           </div>
         </div>
         
-        <PortalManager onPortalChange={() => {}} />
+        {/* Portal Manager */}
+        <PortalManager onPortalChange={setPortals} />
         
+        {/* Tenders List */}
         <div className="mt-8">
-          <h2 className="text-2xl font-bold text-gray-900 mb-4">
+          <h2 className="text-2xl font-bold text-gray-900 mb-4 flex items-center gap-2">
             {showLiveOnly ? '🔴 Live Tender Feed' : '📑 All Tenders'}
-            <span className="text-sm font-normal text-gray-500 ml-2">
+            <span className="text-sm font-normal text-gray-500">
               ({filteredTenders.length} of {tenders.length})
             </span>
           </h2>
