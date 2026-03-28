@@ -100,6 +100,5 @@ htmlcov/
 .vscode-test
 .yarn/install-state.gz
 
-# Local development
-.DS_Store
-debug.log
+
+.env
